@@ -42,6 +42,18 @@ driver.
 
 These are local workarounds until the driver lands upstream.
 
+## Module parameters
+
+- `full_frame_always` (bool, default 0): send a complete frame on every update.
+  Needed for X11 software rotation if you want the cursor without trailing, but
+  very slow at 1080p.
+- `full_frame_period_ms` (uint, default 0 = off): keep damage updates but force
+  a complete frame at most once per period. `100`–`250` is a practical X11
+  software-rotation setting; the cursor reappears and corruption self-heals.
+
+Both are writable at runtime:
+`/sys/module/trigger5/parameters/{full_frame_always,full_frame_period_ms}`.
+
 ## Why the vendor package does not work here
 
 The dongle enumerates as:

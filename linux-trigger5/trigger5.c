@@ -96,6 +96,12 @@ struct trigger5_device {
        /* Set on modeset/enable so the next update pushes a whole frame. */
        bool full_frame;
 
+       /* Last plane rotation, for diagnostics and rotation-change detection. */
+       unsigned int last_rotation;
+
+       /* jiffies of the last complete frame (full_frame_period_ms). */
+       unsigned long last_full_frame;
+
        /*
         * EDID read at probe time. Kept for the lifetime of the device:
         * reading it while bulk transfers are running returns corrupt data.
@@ -162,6 +168,29 @@ struct trigger5_bulk_header {
 #define TRIGGER5_REQUEST_FIRMWARE_RESET                0xD1
 
 #define TRIGGER5_BULK_TIMEOUT_MS               2000
+
+/*
+ * Xorg's modesetting driver (as of 1.21) does not use the plane rotation
+ * property and rotates in software instead. Its damage rectangles then do not
+ * match what this driver expects, which shows up as intermittent corruption.
+ * Setting this to 1 sends a complete frame on every update and is the reliable
+ * workaround for X software rotation (at the cost of bandwidth).
+ */
+static bool full_frame_always;
+module_param(full_frame_always, bool, 0644);
+MODULE_PARM_DESC(full_frame_always,
+		 "Send a complete frame on every update (X software rotation workaround)");
+
+/*
+ * Softer variant of full_frame_always: keep damage-based updates, but force a
+ * complete frame at most once per period. This makes X's software-rotation
+ * cursor re-appear (and heals damage-tracking corruption) without pushing a
+ * full 1080p frame on every commit.
+ */
+static unsigned int full_frame_period_ms;
+module_param(full_frame_period_ms, uint, 0644);
+MODULE_PARM_DESC(full_frame_period_ms,
+		 "Force a complete frame when this many milliseconds have elapsed (0 = off)");
 
 #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
 
@@ -431,6 +460,9 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	struct drm_shadow_plane_state *shadow_plane_state =
 		to_drm_shadow_plane_state(state);
 	struct trigger5_device *trigger5 = to_trigger5(plane->dev);
+	struct drm_crtc_state *crtc_state =
+		state->crtc ? drm_atomic_get_new_crtc_state(atomic_state,
+							    state->crtc) : NULL;
 	struct trigger5_transfer *transfer;
 	struct trigger5_bulk_header *header;
 	struct drm_rect current_rect, src_rect, damage, clip;
@@ -439,7 +471,7 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	unsigned int rotation;
 	int width, height, lines_per_urb;
 	int idx, y;
-	bool full;
+	bool full, periodic_full;
 
 	if (!drm_dev_enter(plane->dev, &idx))
 		return;
@@ -455,18 +487,43 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	src_rect.x2 = (src_rect.x2 >> 16) + !!(src_rect.x2 & 0xffff);
 	src_rect.y2 = (src_rect.y2 >> 16) + !!(src_rect.y2 & 0xffff);
 
+	if (rotation != trigger5->last_rotation) {
+		drm_info(&trigger5->drm,
+			 "rotation=%u src=%dx%d+%d+%d dst=%dx%d+%d+%d fb=%ux%u pitch=%u mode=%dx%d\n",
+			 rotation,
+			 drm_rect_width(&src_rect), drm_rect_height(&src_rect),
+			 src_rect.x1, src_rect.y1,
+			 drm_rect_width(&state->dst), drm_rect_height(&state->dst),
+			 state->dst.x1, state->dst.y1,
+			 state->fb ? state->fb->width : 0,
+			 state->fb ? state->fb->height : 0,
+			 state->fb ? state->fb->pitches[0] : 0,
+			 crtc_state ? crtc_state->mode.hdisplay : 0,
+			 crtc_state ? crtc_state->mode.vdisplay : 0);
+		trigger5->last_rotation = rotation;
+	}
+
 	/*
 	 * After a modeset, a rotation change, or when userspace switches to a
 	 * new framebuffer, damage tracking only describes the changed part of
 	 * the previous frame. Push a complete frame then, otherwise stale rows
 	 * remain on the panel.
 	 */
-	full = trigger5->full_frame || !old_state->fb ||
-	       old_state->fb != state->fb || old_state->crtc != state->crtc ||
-	       old_state->rotation != state->rotation;
+	periodic_full = full_frame_period_ms &&
+		time_after_eq(jiffies, trigger5->last_full_frame +
+			      msecs_to_jiffies(full_frame_period_ms));
+
+	full = full_frame_always || periodic_full || trigger5->full_frame ||
+	       !old_state->fb || old_state->fb != state->fb ||
+	       old_state->crtc != state->crtc ||
+	       old_state->rotation != state->rotation ||
+	       rotation != DRM_MODE_ROTATE_0;
 
 	if (!full && !drm_atomic_helper_damage_merged(old_state, state, &damage))
 		goto exit;
+
+	if (full)
+		trigger5->last_full_frame = jiffies;
 
 	trigger5->full_frame = false;
 
@@ -547,11 +604,26 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	 * the whole destination rectangle. Partial updates under rotation are
 	 * a later optimisation.
 	 */
-	current_rect = state->dst;
+	if (crtc_state) {
+		current_rect.x1 = 0;
+		current_rect.y1 = 0;
+		current_rect.x2 = crtc_state->mode.hdisplay;
+		current_rect.y2 = crtc_state->mode.vdisplay;
+	} else {
+		current_rect = state->dst;
+	}
 	width = drm_rect_width(&current_rect);
 	height = drm_rect_height(&current_rect);
 	if (width <= 0 || height <= 0)
 		goto exit;
+
+	if ((rotation == DRM_MODE_ROTATE_90 || rotation == DRM_MODE_ROTATE_270) &&
+	    (width != drm_rect_height(&src_rect) ||
+	     height != drm_rect_width(&src_rect)))
+		drm_info(&trigger5->drm,
+			 "rotation=%u: destination %dx%d does not match rotated source %dx%d\n",
+			 rotation, width, height,
+			 drm_rect_width(&src_rect), drm_rect_height(&src_rect));
 
 	payload_len = array3_size(width, height, 3);
 	lines_per_urb = TRIGGER5_URB_BUF_SIZE / (width * 3);
@@ -626,6 +698,13 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 
 					sx += src_rect.x1;
 					sy += src_rect.y1;
+					if (sx < src_rect.x1 || sx >= src_rect.x2 ||
+					    sy < src_rect.y1 || sy >= src_rect.y2) {
+						*out++ = 0;
+						*out++ = 0;
+						*out++ = 0;
+						continue;
+					}
 					px = iosys_map_rd(src, sy * pitch + sx * 4,
 							  u32);
 					*out++ = (px >> 16) & 0xff;

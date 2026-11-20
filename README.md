@@ -345,11 +345,30 @@ These are local until the driver lands upstream.
 
 ### Rotation
 
-The primary plane advertises `DRM_MODE_ROTATE_0/90/180/270`, so X11/KWin can
-use DRM plane rotation instead of a software shadow. Non-zero rotations are
-converted in the driver (XRGB8888 → RGB888) and sent as full-frame updates;
-`rotate-0` keeps the damage-based fast path. Portrait therefore works, at the
-cost of full-frame bandwidth while rotated.
+The primary plane advertises `DRM_MODE_ROTATE_0/90/180/270`. Compositors that
+use the DRM plane rotation property (for example KWin on Wayland) rotate
+natively; the driver converts the pixels and sends full frames while rotated.
+
+Xorg 1.21's modesetting driver does **not** use the plane property; it rotates
+in software. The plane then stays at rotate-0, and X's cursor damage never
+reaches the driver, so:
+
+- `full_frame_always=0` — fast damage updates, but the cursor can disappear
+  (and rotated output can show intermittent corruption);
+- `full_frame_always=1` — cursor and corruption correct, but every commit sends
+  a full 1080p frame, which is very slow over USB;
+- `full_frame_period_ms=N` — recommended X11 compromise: damage updates plus a
+  full frame at most every N ms, so the cursor reappears and corruption heals.
+
+```sh
+# X11 software rotation: ~7 full frames/s, damage updates in between
+echo 150 | sudo tee /sys/module/trigger5/parameters/full_frame_period_ms
+# other useful values: 100 (snappier cursor), 250 (less bandwidth)
+echo 0 | sudo tee /sys/module/trigger5/parameters/full_frame_period_ms  # off
+```
+
+`full_frame_always` and `full_frame_period_ms` are runtime module parameters
+(`/sys/module/trigger5/parameters/`), so no rebuild is needed to change them.
 
 ---
 
