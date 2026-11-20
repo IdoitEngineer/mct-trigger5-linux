@@ -39,6 +39,11 @@ driver.
    `needs_reset` flag is cleared after a successful mode re-initialisation.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
    rotated output is converted in the driver and sent as full frames.
+5. **DRM cursor plane.** A 64×64 ARGB8888 cursor plane is exposed and the
+   cursor is composited into the USB frame, so X does not draw a software
+   cursor into the shared PRIME framebuffer. Old positions are erased and the
+   cursor is redrawn last in `atomic_flush()`. Compositing is limited to an
+   unrotated primary plane.
 
 These are local workarounds until the driver lands upstream.
 

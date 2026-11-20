@@ -40,7 +40,13 @@
  #define DRIVER_NAME            "trigger5"
  #define DRIVER_DESC            "MCT Trigger 5 USB display adapter"
  
-@@ -72,6 +93,21 @@
+@@ -67,11 +88,27 @@
+ 
+        struct drm_connector connector;
+        struct drm_plane plane;
++       struct drm_plane cursor;
+        struct drm_crtc crtc;
+        struct drm_encoder encoder;
  
         u16 frame_counter;
  
@@ -62,7 +68,7 @@
         int next_transfer;
         struct trigger5_transfer transfers[TRIGGER5_NUM_URBS];
  
-@@ -133,6 +169,29 @@
+@@ -133,6 +170,29 @@
  
  #define TRIGGER5_BULK_TIMEOUT_MS               2000
  
@@ -92,7 +98,7 @@
  #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
  
  static void trigger5_stop_io(struct trigger5_device *trigger5)
-@@ -173,7 +232,9 @@
+@@ -173,7 +233,9 @@
         /* GEM hooks */
         .fops = &trigger5_driver_fops,
         DRM_GEM_SHMEM_DRIVER_OPS,
@@ -102,7 +108,7 @@
  
         .name = DRIVER_NAME,
         .desc = DRIVER_DESC,
-@@ -345,7 +406,7 @@
+@@ -345,7 +407,7 @@
  }
  
  static int trigger5_plane_atomic_check(struct drm_plane *plane,
@@ -111,7 +117,7 @@
  {
         struct drm_plane_state *new_plane_state =
                 drm_atomic_get_new_plane_state(state, plane);
-@@ -390,96 +451,278 @@
+@@ -390,96 +452,278 @@
  }
  
  static void trigger5_plane_atomic_update(struct drm_plane *plane,
@@ -476,16 +482,231 @@
  }
  
  static const struct drm_plane_helper_funcs trigger5_plane_helper_funcs = {
-@@ -500,7 +743,7 @@
+@@ -499,8 +743,222 @@
+        DRM_FORMAT_XRGB8888,
  };
  
++/*
++ * Send one rectangle of the primary framebuffer, optionally compositing the
++ * cursor image on top. Used by the cursor plane, which has no dedicated
++ * hardware overlay on this device.
++ */
++static void trigger5_send_rect(struct trigger5_device *trigger5,
++			       struct drm_plane_state *primary,
++			       struct drm_plane_state *cursor,
++			       const struct drm_rect *rect)
++{
++	struct trigger5_transfer *transfer;
++	struct trigger5_bulk_header *header;
++	struct drm_shadow_plane_state *pshadow, *cshadow = NULL;
++	const struct iosys_map *pmap, *cmap = NULL;
++	struct drm_rect dst = *rect, pdst, csrc, cdst;
++	struct drm_rect psrc;
++	unsigned int ppitch, cpitch = 0;
++	int width, height, x, y, src_x, src_y;
++	size_t payload;
++	u8 *out;
++
++	if (!primary || !primary->fb || !primary->crtc)
++		return;
++
++	/* Rotation-aware cursor compositing is not implemented. */
++	if (primary->rotation != DRM_MODE_ROTATE_0)
++		return;
++
++	pdst = primary->dst;
++	if (!drm_rect_intersect(&dst, &pdst))
++		return;
++
++	width = drm_rect_width(&dst);
++	height = drm_rect_height(&dst);
++	if (width <= 0 || height <= 0)
++		return;
++
++	payload = array3_size(width, height, 3);
++	if (payload + sizeof(*header) > TRIGGER5_URB_BUF_SIZE)
++		return;
++
++	psrc = drm_plane_state_src(primary);
++	pshadow = to_drm_shadow_plane_state(primary);
++	pmap = &pshadow->data[0];
++	ppitch = primary->fb->pitches[0];
++	src_x = (psrc.x1 >> 16) + (dst.x1 - pdst.x1);
++	src_y = (psrc.y1 >> 16) + (dst.y1 - pdst.y1);
++
++	if (cursor && cursor->fb) {
++		cshadow = to_drm_shadow_plane_state(cursor);
++		cmap = &cshadow->data[0];
++		cpitch = cursor->fb->pitches[0];
++		csrc = drm_plane_state_src(cursor);
++		cdst = cursor->dst;
++	}
++
++	if (drm_gem_fb_begin_cpu_access(primary->fb, DMA_FROM_DEVICE) < 0)
++		return;
++	if (cursor && cursor->fb &&
++	    drm_gem_fb_begin_cpu_access(cursor->fb, DMA_FROM_DEVICE) < 0)
++		goto out_primary;
++
++	transfer = trigger5_get_next_urb(trigger5);
++	if (IS_ERR(transfer))
++		goto out_access;
++
++	header = transfer->urb->transfer_buffer;
++	header->magic = 0xfb;
++	header->length = 0x14;
++	header->counter = cpu_to_le16((trigger5->frame_counter++) & 0xfff);
++	header->horizontal_offset = cpu_to_le16(dst.x1);
++	header->vertical_offset = cpu_to_le16(dst.y1);
++	header->width = cpu_to_le16(width);
++	header->height = cpu_to_le16(height);
++	header->payload_length = cpu_to_le32((u32)payload);
++	header->flags = 0x1;
++	header->unknown1 = 0;
++	header->unknown2 = 0;
++	header->checksum = trigger5_bulk_header_checksum(header);
++
++	if (trigger5_submit_urb(transfer, sizeof(*header)))
++		goto out_access;
++
++	transfer = trigger5_get_next_urb(trigger5);
++	if (IS_ERR(transfer))
++		goto out_access;
++
++	out = transfer->urb->transfer_buffer;
++	for (y = dst.y1; y < dst.y2; y++) {
++		for (x = dst.x1; x < dst.x2; x++) {
++			int px = src_x + (x - dst.x1);
++			int py = src_y + (y - dst.y1);
++			u32 p = iosys_map_rd(pmap, py * ppitch + px * 4, u32);
++			u8 r = (p >> 16) & 0xff;
++			u8 g = (p >> 8) & 0xff;
++			u8 b = p & 0xff;
++
++			if (cmap && x >= cdst.x1 && x < cdst.x2 &&
++			    y >= cdst.y1 && y < cdst.y2) {
++				int cx = (csrc.x1 >> 16) + (x - cdst.x1);
++				int cy = (csrc.y1 >> 16) + (y - cdst.y1);
++				u32 c = iosys_map_rd(cmap, cy * cpitch + cx * 4,
++						     u32);
++				u8 a = (c >> 24) & 0xff;
++
++				if (a == 0xff) {
++					r = (c >> 16) & 0xff;
++					g = (c >> 8) & 0xff;
++					b = c & 0xff;
++				} else if (a) {
++					u8 cr = (c >> 16) & 0xff;
++					u8 cg = (c >> 8) & 0xff;
++					u8 cb = c & 0xff;
++
++					r = (cr * a + r * (255 - a)) / 255;
++					g = (cg * a + g * (255 - a)) / 255;
++					b = (cb * a + b * (255 - a)) / 255;
++				}
++			}
++
++			*out++ = r;
++			*out++ = g;
++			*out++ = b;
++		}
++	}
++
++	if (trigger5_submit_urb(transfer, payload))
++		goto out_access;
++
++out_access:
++	if (cursor && cursor->fb)
++		drm_gem_fb_end_cpu_access(cursor->fb, DMA_FROM_DEVICE);
++out_primary:
++	drm_gem_fb_end_cpu_access(primary->fb, DMA_FROM_DEVICE);
++}
++
++static int trigger5_cursor_atomic_check(struct drm_plane *plane,
++					TRIGGER5_ATOMIC_COMMIT *state)
++{
++	struct drm_plane_state *new_state =
++		drm_atomic_get_new_plane_state(state, plane);
++	struct drm_crtc_state *crtc_state = NULL;
++	int ret;
++
++	if (new_state->crtc)
++		crtc_state = drm_atomic_get_new_crtc_state(state, new_state->crtc);
++
++	ret = drm_atomic_helper_check_plane_state(new_state, crtc_state,
++						  DRM_PLANE_NO_SCALING,
++						  DRM_PLANE_NO_SCALING,
++						  true, false);
++	if (ret || !new_state->fb)
++		return ret;
++
++	if (new_state->fb->width > 64 || new_state->fb->height > 64)
++		return -EINVAL;
++
++	return 0;
++}
++
++static void trigger5_crtc_atomic_flush(struct drm_crtc *crtc,
++				      TRIGGER5_ATOMIC_COMMIT *state)
++{
++	struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
++	struct drm_plane_state *primary =
++		drm_atomic_get_new_plane_state(state, &trigger5->plane);
++	struct drm_plane_state *cursor_new =
++		drm_atomic_get_new_plane_state(state, &trigger5->cursor);
++	struct drm_plane_state *cursor_old =
++		drm_atomic_get_old_plane_state(state, &trigger5->cursor);
++	struct drm_rect rect;
++	int idx;
++
++	if (!primary || !primary->fb)
++		return;
++	if (!drm_dev_enter(crtc->dev, &idx))
++		return;
++
++	/* Erase the previous cursor position if it moved or was disabled. */
++	if (cursor_old && cursor_old->fb &&
++	    (!cursor_new || !cursor_new->fb ||
++	     !drm_rect_equals(&cursor_old->dst, &cursor_new->dst))) {
++		rect = cursor_old->dst;
++		trigger5_send_rect(trigger5, primary, NULL, &rect);
++	}
++
++	/*
++	 * Always redraw a visible cursor last: primary plane updates (and full
++	 * frames) can overwrite its area.
++	 */
++	if (cursor_new && cursor_new->fb) {
++		rect = cursor_new->dst;
++		trigger5_send_rect(trigger5, primary, cursor_new, &rect);
++	}
++
++	drm_dev_exit(idx);
++}
++
++static const struct drm_plane_helper_funcs trigger5_cursor_helper_funcs = {
++	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
++	.atomic_check = trigger5_cursor_atomic_check,
++};
++
++static const struct drm_plane_funcs trigger5_cursor_funcs = {
++	.update_plane = drm_atomic_helper_update_plane,
++	.disable_plane = drm_atomic_helper_disable_plane,
++	.destroy = drm_plane_cleanup,
++	DRM_GEM_SHADOW_PLANE_FUNCS,
++};
++
++static const u32 trigger5_cursor_formats[] = {
++	DRM_FORMAT_ARGB8888,
++};
++
  static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
 -                                       struct drm_atomic_commit *state)
 +                                       TRIGGER5_ATOMIC_COMMIT *state)
  {
         struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
         struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-@@ -600,6 +843,13 @@
+@@ -600,6 +1058,13 @@
         if (ret)
                 goto err;
  
@@ -499,7 +720,7 @@
         goto exit;
  
  err:
-@@ -609,7 +859,7 @@
+@@ -609,7 +1074,7 @@
  }
  
  static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
@@ -508,7 +729,11 @@
  {
         struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
         struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-@@ -672,7 +922,9 @@
+@@ -669,10 +1134,13 @@
+        .atomic_disable = trigger5_crtc_atomic_disable,
+        .atomic_check = drm_crtc_helper_atomic_check,
+        .atomic_enable = trigger5_crtc_atomic_enable,
++       .atomic_flush = trigger5_crtc_atomic_flush,
  };
  
  static const struct drm_crtc_funcs trigger5_crtc_funcs = {
@@ -518,7 +743,7 @@
         .destroy = drm_crtc_cleanup,
         .set_config = drm_atomic_helper_set_config,
         .page_flip = drm_atomic_helper_page_flip,
-@@ -708,18 +960,33 @@
+@@ -708,18 +1176,33 @@
         return 0;
  }
  
@@ -559,7 +784,7 @@
  }
  
  static enum drm_connector_status
-@@ -755,7 +1022,9 @@
+@@ -755,7 +1238,9 @@
         .fill_modes = drm_helper_probe_single_connector_modes,
         .destroy = drm_connector_cleanup,
         .detect = trigger5_detect,
@@ -569,7 +794,7 @@
         .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
         .atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
  };
-@@ -774,14 +1043,26 @@
+@@ -774,14 +1259,26 @@
         return ret;
  }
  
@@ -596,7 +821,7 @@
         struct usb_device *udev = interface_to_usbdev(interface);
         /* Heuristic: Presence of audio interfaces indicates HDMI. */
         bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
-@@ -807,6 +1088,11 @@
+@@ -807,6 +1304,11 @@
  
         dev = &trigger5->drm;
  
@@ -608,7 +833,7 @@
         dma_dev = usb_intf_get_dma_device(interface);
         if (dma_dev) {
                 drm_dev_set_dma_dev(dev, dma_dev);
-@@ -815,6 +1101,7 @@
+@@ -815,6 +1317,7 @@
                 drm_warn(dev,
                          "buffer sharing not supported"); /* not an error */
         }
@@ -616,7 +841,16 @@
  
         ret = drmm_mode_config_init(dev);
         if (ret)
-@@ -843,6 +1130,15 @@
+@@ -828,6 +1331,8 @@
+        dev->mode_config.max_width = 8191;
+        dev->mode_config.min_height = 1;
+        dev->mode_config.max_height = 8191;
++       dev->mode_config.cursor_width = 64;
++       dev->mode_config.cursor_height = 64;
+ 
+        dev->mode_config.funcs = &trigger5_mode_config_funcs;
+        dev->mode_config.helper_private = &trigger5_mode_config_helper_funcs;
+@@ -843,8 +1348,28 @@
         drm_plane_helper_add(&trigger5->plane, &trigger5_plane_helper_funcs);
         drm_plane_enable_fb_damage_clips(&trigger5->plane);
  
@@ -629,10 +863,24 @@
 +       if (ret)
 +               return ret;
 +
++       ret = drm_universal_plane_init(dev, &trigger5->cursor, 1,
++                                      &trigger5_cursor_funcs,
++                                      trigger5_cursor_formats,
++                                      ARRAY_SIZE(trigger5_cursor_formats), NULL,
++                                      DRM_PLANE_TYPE_CURSOR, NULL);
++       if (ret)
++               return ret;
++
++       drm_plane_helper_add(&trigger5->cursor, &trigger5_cursor_helper_funcs);
++
         ret = drm_crtc_init_with_planes(dev, &trigger5->crtc, &trigger5->plane,
-                                        NULL, &trigger5_crtc_funcs, NULL);
+-                                       NULL, &trigger5_crtc_funcs, NULL);
++                                       &trigger5->cursor, &trigger5_crtc_funcs,
++                                       NULL);
         if (ret)
-@@ -856,6 +1152,18 @@
+                return ret;
+ 
+@@ -856,6 +1381,18 @@
         if (ret)
                 return ret;
  
@@ -651,7 +899,7 @@
         ret = drm_encoder_init(dev, &trigger5->encoder, &trigger5_encoder_funcs,
                                is_hdmi ? DRM_MODE_ENCODER_TMDS :
                                          DRM_MODE_ENCODER_DAC, NULL);
-@@ -882,7 +1190,15 @@
+@@ -882,7 +1419,15 @@
         if (ret)
                 goto err_poll_fini;
  

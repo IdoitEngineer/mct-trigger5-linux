@@ -340,6 +340,23 @@ driver never calls `request_firmware()`.
    `needs_reset` flag cleared after a successful mode re-init.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
    non-zero rotations are converted in the driver and sent as full frames.
+5. **DRM cursor plane.** The cursor image is composited into the USB frame by
+   the driver instead of being drawn as an X software cursor into the shared
+   PRIME framebuffer. This removes the duplicate/offset cursor seen on the
+   NVIDIA outputs when the Trigger 5 output was enabled. Cursor compositing is
+   only implemented for an unrotated primary plane.
+
+### Cursor
+
+X no longer needs to draw a software cursor for the Trigger 5 sink: the driver
+exposes a 64×64 ARGB8888 cursor plane and composites the image into the device
+frame (including erasing the old position). This is what prevents the stray
+cursor on the NVIDIA screen. On commits that also repaint the primary plane,
+the cursor rectangle is redrawn last in `atomic_flush()`.
+
+With native plane rotation (a compositor that sets the plane rotation property)
+cursor compositing is currently disabled; the compositor is expected to draw
+the cursor into the primary framebuffer in that case.
 
 These are local until the driver lands upstream.
 
