@@ -23,7 +23,7 @@ the vendor binaries are proprietary and not covered — see
 | `ubuntu_T6_260223.run` | MCT's Linux installer for **Trigger 6**: builds evdi + the `T6evdi`/`T6contrl` userspace daemon and installs systemd units. Does not match this dongle. |
 | `linux-trigger5/` | The Trigger 5 DRM driver (`trigger5.c`), DKMS packaging, install/uninstall scripts, Debian packaging and driver notes. See [`linux-trigger5/README.md`](linux-trigger5/README.md). |
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
-| `trigger5-dkms_1.0_all.deb` | Prebuilt Debian package (DKMS source form). Rebuild it any time with the instructions below. |
+| `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 ## Status
 
