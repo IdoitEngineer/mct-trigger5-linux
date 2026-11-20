@@ -22,6 +22,9 @@ the vendor binaries are proprietary and not covered — see
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
 | `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
+Vendor installers are not kept in this repo (they are proprietary); see
+[Vendor drivers](#vendor-drivers) for MCT's download links.
+
 ## Status
 
 - Device probes, reads EDID from the attached monitor, sets modes and streams
@@ -126,6 +129,62 @@ interrupt-IN `0x84`.
 The Windows package works on the same dongle because it is a family package:
 Windows binds `trgidd64.inf` section `Trigger5_install22621.NT`, i.e. MCT's
 Indirect Display Driver for Trigger 5.
+
+## Vendor drivers
+
+The vendor installers are **not** stored in this repo: they are MCT proprietary
+binaries with no redistribution licence. Use MCT's own download links below.
+Links were checked on 2026-11-20 (HTTP status and file name/size).
+
+### Windows — Trigger family
+
+- Download page: <https://www.mct.com.tw/download.php?lang=en&tb=1>
+  (entry "USB Display Adapters (Windows 7/ 8.1/10 /11)")
+- Direct link (serves `TriggerFamily-Dongle-25.01.1223.0179.zip`, 75,999,287 bytes):
+  <https://www.mct.com.tw/include/download.php?dl=MjAxODAwNzczX158ZG93bmxvYWRefDAwMDAwMDAxNTA=>
+- The zip contains `TriggerFamily-Dongle-25.01.1223.0179.exe` (InstallShield).
+  On Windows 11 it installs `trgidd64.inf` and binds the
+  `Trigger5_install22621.NT` section to `0711:5805`.
+
+SHA-256 of the copies used for this project:
+
+```
+ce08ab1526f806e78bdc249f2cc639817dd880dba36216b2518c36a67911d72a  TriggerFamily-Dongle-25.01.1223.0179.zip
+a838a5653952510eb8829b1fcfbc3c0a96aaa3d97b4115341127aca6ce8f0fa2  TriggerFamily-Dongle-25.01.1223.0179.exe
+```
+
+### Linux — Trigger 6 only (not for this adapter)
+
+MCT's Linux package targets Trigger VI (T6-688SL), not the Trigger 5 chip in
+this device. It is listed for reference and for anyone with a T6 dongle.
+
+- Download page: <https://www.mct.com.tw/download.php?lang=en&tb=1>
+  (entry "Ubuntu driver for USB 3.0 Display Adapters", dated 2026-02-23)
+- Direct link (serves `Linux Driver_Ubuntu 24.04.4.pdf`, 132,588 bytes):
+  <https://www.mct.com.tw/include/download.php?dl=MjAxODAwNzczX158ZG93bmxvYWRefDAwMDAwMDAxNzQ=>
+- That PDF links `ubuntu_T6_260223.run` on MCT's SharePoint:
+  <https://mctsharing-my.sharepoint.com/:u:/g/personal/mctsharing_mctsharing_onmicrosoft_com/IQB96jD4laVBTYU5KguRVolNAcK0nV1ndfDimx7-ippGcvk?e=ZMsrfU>
+  (resolve to `…/Documents/Winnie/ubuntu_T6_260223.run`; the SharePoint share
+  link may expire — the MCT download page is authoritative)
+- Installation, per the PDF:
+
+  ```sh
+  chmod u+x ubuntu_T6_260223.run
+  sudo ./ubuntu_T6_260223.run
+  ```
+
+- MCT notes: supports Trigger VI T6-688SL products only; no HDMI audio on Linux.
+- SHA-256 of the copy used for this project:
+
+  ```
+  516fa2096296625d4bc9f64e78b49d586379cc51e88a41fcb98d085104c0d964  ubuntu_T6_260223.run
+  ```
+
+Community copies of the same driver, for fallback/reference:
+
+- <https://github.com/ia-S-on/T6_evdi> — extracted MCT T6 driver, includes `ubuntu_T6.run`
+- <https://github.com/rfxDarth/mobilepixels-linux-driver> — older `ubuntuT6_24011601.run`, plus fixes
+
 
 ---
 
