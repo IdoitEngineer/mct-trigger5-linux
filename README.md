@@ -81,11 +81,28 @@ package-build time; DKMS compiles against the target kernel on install).
 
 ```sh
 cd linux-trigger5
+
+# direct
 dpkg-buildpackage -us -uc -b
+
+# or through the Makefile (same command)
+make debpkg
 ```
 
-Result: `../trigger5-dkms_1.0_all.deb` (repo root), containing
-`/usr/src/trigger5-1.0/{trigger5.c,Makefile,dkms.conf}`.
+Both produce these artefacts one level up (repo root):
+
+```
+../trigger5-dkms_1.0_all.deb
+../trigger5_1.0_amd64.changes
+../trigger5_1.0_amd64.buildinfo
+```
+
+Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
+stays):
+
+```sh
+make debclean
+```
 
 Install it:
 
@@ -93,6 +110,15 @@ Install it:
 sudo apt install ./trigger5-dkms_1.0_all.deb
 # or
 sudo dpkg -i trigger5-dkms_1.0_all.deb
+```
+
+Typical end-to-end:
+
+```sh
+cd linux-trigger5
+make debpkg
+sudo apt install ../trigger5-dkms_1.0_all.deb
+sudo reboot
 ```
 
 The package's `postinst` runs `dkms add/build/install` for the running kernel

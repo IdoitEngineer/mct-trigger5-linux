@@ -89,8 +89,9 @@ The script builds the module with DKMS against the running kernel's headers and
 adds `trigger5` to `/etc/modules` (Devuan's kmod init script). No systemd is
 required.
 
-A Debian package is also available; build it with `dpkg-buildpackage` (see the
-[repository README](../README.md#building-a-debian-package)) and install
+A Debian package is also available; build it with `make debpkg` (or
+`dpkg-buildpackage -us -uc -b`) — see the
+[repository README](../README.md#building-a-debian-package) — and install
 `trigger5-dkms_1.0_all.deb`.
 
 Manual build if you prefer:
