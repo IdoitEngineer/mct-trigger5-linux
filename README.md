@@ -18,9 +18,6 @@ the vendor binaries are proprietary and not covered — see
 
 | Path | What it is |
 |---|---|
-| `TriggerFamily-Dongle-25.01.1223.0179.exe` | MCT's Windows InstallShield package. Covers the whole Trigger family (T1P/T2/T3/T5/T6 INFs, an Indirect Display Driver, firmware update tools). Not used on Linux. |
-| `TriggerFamily-Dongle-25.01.1223.0179.zip` | The same `.exe`, zipped. No separate sources inside. |
-| `ubuntu_T6_260223.run` | MCT's Linux installer for **Trigger 6**: builds evdi + the `T6evdi`/`T6contrl` userspace daemon and installs systemd units. Does not match this dongle. |
 | `linux-trigger5/` | The Trigger 5 DRM driver (`trigger5.c`), DKMS packaging, install/uninstall scripts, Debian packaging and driver notes. See [`linux-trigger5/README.md`](linux-trigger5/README.md). |
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
 | `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
@@ -397,45 +394,6 @@ Provenance: the copy here came from the public dri-devel patch series. The
 mail-archive line wrapping and tab expansion were repaired, soft-wrapped lines
 were rejoined, and an obfuscated `MODULE_AUTHOR` address was restored. The
 functional changes are isolated in `linux-trigger5/trigger5-edid-fullframe.patch`.
-
-### The vendor files: proprietary
-
-`TriggerFamily-Dongle-…exe`, its `.zip`, and `ubuntu_T6_260223.run` are MCT
-proprietary binaries with **no redistribution licence**. Specifically:
-
-- the `.run` shell script has no licence header;
-- the `T6evdi`/`T6contrl` sources inside it have no licence headers, so they
-  default to "all rights reserved" (being distributed in an installer is not a
-  grant to redistribute);
-- the `evdi` source bundled inside the `.run` **is** GPL-2.0 (DisplayLink/Red
-  Hat copyright) and would need normal GPL compliance if extracted and
-  redistributed;
-- the InstallShield copyright strings in the `.exe` belong to the installer
-  tooling, not to MCT's driver.
-
-**Recommendation before making this repo public:** do not publish the vendor
-files. They are currently tracked in git.
-
-```sh
-git rm --cached TriggerFamily-Dongle-25.01.1223.0179.exe \
-               TriggerFamily-Dongle-25.01.1223.0179.zip \
-               ubuntu_T6_260223.run
-printf '%s\n' 'TriggerFamily-*' '*.exe' '*.zip' 'ubuntu_T6_*.run' >> .gitignore
-git commit -m "Do not track vendor binaries"
-```
-
-`git rm --cached` only stops tracking them in the current commit; the blobs
-remain in history. To publish clean history, rewrite it first (destructive):
-
-```sh
-git filter-repo --invert-paths \
-  --path TriggerFamily-Dongle-25.01.1223.0179.exe \
-  --path TriggerFamily-Dongle-25.01.1223.0179.zip \
-  --path ubuntu_T6_260223.run
-```
-
-Then point readers at MCT's own download page for the vendor installers instead
-of mirroring them.
 
 ### Our work: GPL-2.0-only
 
