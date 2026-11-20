@@ -593,11 +593,14 @@ Last verified: 2026-11-20.
 
 | Environment | Kernel | Verified |
 |---|---|---|
-| Devuan 6 host (real hardware) | 6.12.117, 7.2.12, 7.2.14, 7.3.3 | module compile for each; per-kernel DKMS install via `scripts/dkms-install-local.sh`; runtime display on 7.3.3 |
+| Devuan 6 host (real hardware) | 6.12.117, 7.2.12, 7.2.14, 7.3.3 | compile and DKMS install for each; runtime display on 7.3.3 |
 | linux-stable API checks (host, manual) | v7.0, v7.1, v7.2, v7.3 | compile-only (`scripts/test-kernel-ref.sh`) |
-| Debian 13 trixie (Docker + CI) | 6.12.x | module compile, `.deb`, DKMS install, verification |
-| Ubuntu 26.04 LTS (Docker + CI) | 7.0.x | module compile, `.deb`, DKMS install, verification |
+| Debian 13 trixie (Docker + CI) | 6.12.x | module compile, `.deb`, DKMS install, verification (CI job passed) |
+| Ubuntu 26.04 LTS (Docker + CI) | 7.0.x | module compile, `.deb`, DKMS install, verification (CI job passed) |
 | Ubuntu 26.10 (optional CI job) | 7.3.x | compile |
+
+GitLab pipeline `420` passed on 2026-11-20 for commit `eb8d64b` (lint, Debian
+6.12 build + DKMS install, Ubuntu 7.0 build + DKMS install).
 
 Minimum supported kernel: **6.12**. Stock distribution defaults below that are
 not supported (Debian 12 / 6.1, Ubuntu 24.04 GA / 6.8); DKMS skips them via
