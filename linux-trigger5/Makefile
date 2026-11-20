@@ -26,6 +26,6 @@ debclean:
 	rm -f ../trigger5_*.changes ../trigger5_*.buildinfo
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	@if [ -e "$(KDIR)/Makefile" ]; then $(MAKE) -C $(KDIR) M=$(PWD) clean; fi
 
 .PHONY: all clean debpkg debclean

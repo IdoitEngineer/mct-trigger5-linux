@@ -131,8 +131,9 @@ Notes:
   `evdi-dkms` package is only needed by MCT's Trigger 6 userspace daemon.
 - If you installed the module earlier with `sudo ./install.sh`, remove it first
   (`sudo ./uninstall.sh`) to avoid two DKMS registrations for the same module.
-- Build dependencies: `debhelper`, `dkms`, `dpkg-dev` (all present in a normal
-  Devuan/Debian build environment).
+- Build dependencies: `debhelper`, `dpkg-dev`. `dkms` (>= 2.1) is needed at
+  install time only; the package uses hand-written maintainer scripts, so it
+  works with the stock Debian/Ubuntu `dkms` (no `dh_dkms` addon required).
 
 ---
 
@@ -319,9 +320,11 @@ driver never calls `request_firmware()`.
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
 - Packaging: DKMS (`trigger5/1.0`) with a plain out-of-tree `Makefile`.
-- Requires Linux **7.3 or newer**: the driver uses DRM APIs added in 7.3.
-  `dkms.conf` sets `BUILD_EXCLUSIVE_KERNEL_MIN="7.3"` so DKMS skips older
-  installed kernels instead of failing their builds.
+- Requires Linux **6.12 or newer**. The driver carries compile-time guards for
+  the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
+  7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
+  `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips older installed kernels
+  instead of failing their builds.
 - Upstream tested only the HDMI path; this unit is the VGA path and works.
 - **`evdi` is not required.** `trigger5` is a standalone DRM driver; the
   `evdi-dkms` package is only needed by MCT's Trigger 6 userspace daemon.
@@ -425,6 +428,93 @@ xrandr --output VGA-1-1 --mode 1920x1080 --pos 0x0
 *System Settings → Display and Monitor*; KScreen stores it under
 `~/.local/share/kscreen/`.
 
+## Local testing
+
+These helpers are for the machine you are working on. They are **not** used by
+the Docker jobs or the GitLab pipeline.
+
+### Compile against every installed kernel
+
+```sh
+./scripts/test-local-kernels.sh
+```
+
+Scans `/lib/modules/*`, skips kernels without headers and kernels below
+`BUILD_EXCLUSIVE_KERNEL_MIN` (6.12), and builds `trigger5.ko` for the rest in a
+temporary directory. Newly installed header packages are picked up
+automatically.
+
+### Build the package and lint it
+
+```sh
+./scripts/test-local.sh
+```
+
+Runs the kernel matrix, builds `trigger5-dkms`, runs lintian, then cleans the
+Debian build state.
+
+### Install the module for every installed kernel (root)
+
+```sh
+sudo ./scripts/dkms-install-local.sh            # skip already installed
+sudo ./scripts/dkms-install-local.sh --force    # rebuild/reinstall
+sudo ./scripts/dkms-install-local.sh --dry-run  # show what would happen
+```
+
+The DKMS source must already be registered (`sudo ./install.sh` or the `.deb`).
+Kernels without headers are skipped with a message. Verify afterwards with:
+
+```sh
+dkms status -m trigger5
+modinfo -k <kernel> trigger5
+```
+
+### One-off API-boundary check (linux-stable)
+
+```sh
+./scripts/test-kernel-ref.sh v7.0
+./scripts/test-kernel-ref.sh v7.1
+```
+
+Creates a worktree under `~/Software/Linux/builds/<ref>`, prepares it with
+`modules_prepare`, and builds the module. Developer check only; it is not part
+of Docker or CI. (`~/Software/Linux/linux-stable` and the build root can be
+overridden with `LINUX_STABLE` and `BUILD_ROOT`.)
+
+## Distribution testing with Docker
+
+Only the **stock default kernels** of the distributions are tested:
+
+- Debian 13 (trixie): 6.12.x
+- Ubuntu 26.04 LTS: 7.0.x
+- optional/manual: Ubuntu 26.10 (7.3.x)
+
+```sh
+./docker/run-tests.sh            # both stock targets
+./docker/run-tests.sh debian
+./docker/run-tests.sh ubuntu
+```
+
+Each run builds the image, compiles the module against the distro kernel
+headers, builds and lints the `.deb`, installs it, and builds/verifies the DKMS
+module. Containers share the host kernel, so the distro kernel build is done
+with an explicit `dkms -k <header-version>`; the package `postinst` is exercised
+against the host version with a symlinked build tree.
+
+## CI
+
+`.gitlab-ci.yml` runs the same stock-distribution checks on the GitLab Docker
+runners:
+
+| Job | Image | Kernel |
+|---|---|---|
+| `lint:debian` | debian:trixie | — (builds and lints the `.deb`) |
+| `build:debian-6.12` | debian:trixie | 6.12.x |
+| `build:ubuntu-7.0` | ubuntu:26.04 | 7.0.x |
+| `test:install-debian-6.12` | debian:trixie | DKMS install + verification |
+| `test:install-ubuntu-7.0` | ubuntu:26.04 | DKMS install + verification |
+| `build:ubuntu-7.3` | ubuntu:26.10 | 7.3.x (manual, non-blocking) |
+
 ## Troubleshooting
 
 | Symptom | Check / fix |
@@ -437,7 +527,7 @@ xrandr --output VGA-1-1 --mode 1920x1080 --pos 0x0
 | Garbled / stale picture after rotation | Fixed by the full-frame change; if it persists, native rotation is needed. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel 7.2.x` / `6.12` | Expected: the driver needs kernel ≥ 7.3 (`atomic_create_state`, `drm/clients/drm_client_setup.h`). `dkms.conf` now declares `BUILD_EXCLUSIVE_KERNEL_MIN="7.3"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0_all.deb`, or `sudo ./install.sh`) and the errors stop. |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 
@@ -496,3 +586,27 @@ by this licence, and should not be redistributed.
 Everything here is provided as-is, with no warranty. Flashing, rotating and
 modesetting USB display hardware can leave a session unusable — keep a second
 display or SSH access handy.
+
+## Tested kernels and distributions
+
+Last verified: 2026-11-20.
+
+| Environment | Kernel | Verified |
+|---|---|---|
+| Devuan 6 host (real hardware) | 6.12.117, 7.2.12, 7.2.14, 7.3.3 | module compile for each; per-kernel DKMS install via `scripts/dkms-install-local.sh`; runtime display on 7.3.3 |
+| linux-stable API checks (host, manual) | v7.0, v7.1, v7.2, v7.3 | compile-only (`scripts/test-kernel-ref.sh`) |
+| Debian 13 trixie (Docker + CI) | 6.12.x | module compile, `.deb`, DKMS install, verification |
+| Ubuntu 26.04 LTS (Docker + CI) | 7.0.x | module compile, `.deb`, DKMS install, verification |
+| Ubuntu 26.10 (optional CI job) | 7.3.x | compile |
+
+Minimum supported kernel: **6.12**. Stock distribution defaults below that are
+not supported (Debian 12 / 6.1, Ubuntu 24.04 GA / 6.8); DKMS skips them via
+`BUILD_EXCLUSIVE_KERNEL_MIN`.
+
+Per-kernel installation on a developer machine:
+
+```sh
+sudo ./scripts/dkms-install-local.sh
+dkms status -m trigger5
+```
+

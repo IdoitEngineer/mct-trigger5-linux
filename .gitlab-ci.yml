@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Stock-distribution tests only: Debian 13 (6.12) and Ubuntu 26.04 (7.0).
+# The local host kernel matrix and the linux-stable API checks are developer
+# tools under scripts/ and are deliberately not part of this pipeline.
+
+stages:
+  - lint
+  - build
+  - test
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+
+default:
+  tags:
+    - tls-docker-runner
+
+lint:debian:
+  stage: lint
+  image: debian:trixie
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential dpkg-dev debhelper lintian >/dev/null
+  script:
+    - cd linux-trigger5
+    - make debpkg
+    - lintian ../trigger5-dkms_*.deb
+  artifacts:
+    paths:
+      - trigger5-dkms_*.deb
+    expire_in: 1 week
+
+build:debian-6.12:
+  stage: build
+  image: debian:trixie
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential dkms kmod linux-headers-amd64 >/dev/null
+  script:
+    - ci/build-module.sh "$CI_PROJECT_DIR"
+
+build:ubuntu-7.0:
+  stage: build
+  image: ubuntu:26.04
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential dkms kmod linux-headers-generic >/dev/null
+  script:
+    - ci/build-module.sh "$CI_PROJECT_DIR"
+
+test:install-debian-6.12:
+  stage: test
+  image: debian:trixie
+  needs:
+    - lint:debian
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq dkms kmod ca-certificates linux-headers-amd64 >/dev/null
+  script:
+    - ci/test-install.sh "$(ls -1t trigger5-dkms_*.deb | head -n1)"
+
+test:install-ubuntu-7.0:
+  stage: test
+  image: ubuntu:26.04
+  needs:
+    - lint:debian
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq dkms kmod ca-certificates linux-headers-generic >/dev/null
+  script:
+    - ci/test-install.sh "$(ls -1t trigger5-dkms_*.deb | head -n1)"
+
+# Ubuntu 26.10 ships 7.3; it exercises the new atomic API. Interim release, so
+# manual and non-blocking.
+build:ubuntu-7.3:
+  stage: build
+  image: ubuntu:26.10
+  when: manual
+  allow_failure: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential dkms kmod linux-headers-generic >/dev/null
+  script:
+    - ci/build-module.sh "$CI_PROJECT_DIR"

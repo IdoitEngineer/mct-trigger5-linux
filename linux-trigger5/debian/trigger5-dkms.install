@@ -1,2 +1,3 @@
 trigger5.c usr/src/trigger5-1.0
 Makefile usr/src/trigger5-1.0
+dkms.conf usr/src/trigger5-1.0

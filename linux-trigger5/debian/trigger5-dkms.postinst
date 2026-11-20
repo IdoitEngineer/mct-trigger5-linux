@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Jeringa
+#
+# DKMS registration for trigger5. Written by hand so the package works with
+# stock Debian/Ubuntu dkms versions that do not ship the dh_dkms debhelper
+# addon.
+
+set -e
+
+VERSION=1.0
+KVER=$(uname -r)
+
+case "$1" in
+configure)
+	if [ -d "/lib/modules/$KVER/build" ]; then
+		dkms add -m trigger5 -v "$VERSION" || true
+		if dkms build -m trigger5 -v "$VERSION" -k "$KVER"; then
+			dkms install -m trigger5 -v "$VERSION" -k "$KVER" || \
+				echo "trigger5: dkms install failed" >&2
+		else
+			echo "trigger5: build failed for $KVER; install matching kernel headers" >&2
+			echo "trigger5: see /var/lib/dkms/trigger5/$VERSION/build/make.log" >&2
+		fi
+	else
+		echo "trigger5: no kernel headers for $KVER; module not built" >&2
+	fi
+	;;
+esac
+
+#DEBHELPER#
+
+exit 0

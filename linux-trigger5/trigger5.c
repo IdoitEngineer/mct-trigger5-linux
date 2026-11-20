@@ -15,8 +15,17 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/usb.h>
+#include <linux/version.h>
 
+/*
+ * drm_client_setup.h moved from drm/ to drm/clients/ in the 7.x series.
+ * Feature-test instead of guessing the kernel version.
+ */
+#if __has_include(<drm/clients/drm_client_setup.h>)
 #include <drm/clients/drm_client_setup.h>
+#else
+#include <drm/drm_client_setup.h>
+#endif
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
@@ -43,6 +52,17 @@
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_rect.h>
+
+/*
+ * "struct drm_atomic_state" was renamed to "struct drm_atomic_commit" in
+ * Linux 7.2 (commit 5164f7e7ff8e).  Keep one name in the callbacks and map
+ * it per API generation, so every 6.12.x and 7.x kernel builds.
+ */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#define TRIGGER5_ATOMIC_COMMIT struct drm_atomic_commit
+#else
+#define TRIGGER5_ATOMIC_COMMIT struct drm_atomic_state
+#endif
 
 #define DRIVER_NAME            "trigger5"
 #define DRIVER_DESC            "MCT Trigger 5 USB display adapter"
@@ -182,7 +202,9 @@ static const struct drm_driver trigger5_drm_driver = {
        /* GEM hooks */
        .fops = &trigger5_driver_fops,
        DRM_GEM_SHMEM_DRIVER_OPS,
+#ifdef DRM_FBDEV_SHMEM_DRIVER_OPS
        DRM_FBDEV_SHMEM_DRIVER_OPS,
+#endif
 
        .name = DRIVER_NAME,
        .desc = DRIVER_DESC,
@@ -354,7 +376,7 @@ static size_t trigger5_mode_buf_len(const struct drm_display_mode *mode)
 }
 
 static int trigger5_plane_atomic_check(struct drm_plane *plane,
-                                      struct drm_atomic_commit *state)
+                                      TRIGGER5_ATOMIC_COMMIT *state)
 {
        struct drm_plane_state *new_plane_state =
                drm_atomic_get_new_plane_state(state, plane);
@@ -399,7 +421,7 @@ static u8 trigger5_bulk_header_checksum(const struct trigger5_bulk_header *heade
 }
 
 static void trigger5_plane_atomic_update(struct drm_plane *plane,
-                                        struct drm_atomic_commit *atomic_state)
+                                        TRIGGER5_ATOMIC_COMMIT *atomic_state)
 {
        struct drm_plane_state *old_state =
                drm_atomic_get_old_plane_state(atomic_state, plane);
@@ -526,7 +548,7 @@ static const u32 trigger5_plane_formats[] = {
 };
 
 static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
-                                       struct drm_atomic_commit *state)
+                                       TRIGGER5_ATOMIC_COMMIT *state)
 {
        struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
        struct usb_device *udev = interface_to_usbdev(trigger5->intf);
@@ -642,7 +664,7 @@ exit:
 }
 
 static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
-                                        struct drm_atomic_commit *state)
+                                        TRIGGER5_ATOMIC_COMMIT *state)
 {
        struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
        struct usb_device *udev = interface_to_usbdev(trigger5->intf);
@@ -705,7 +727,9 @@ static const struct drm_crtc_helper_funcs trigger5_crtc_helper_funcs = {
 };
 
 static const struct drm_crtc_funcs trigger5_crtc_funcs = {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
        .atomic_create_state = drm_atomic_helper_crtc_create_state,
+#endif
        .destroy = drm_crtc_cleanup,
        .set_config = drm_atomic_helper_set_config,
        .page_flip = drm_atomic_helper_page_flip,
@@ -803,7 +827,9 @@ static const struct drm_connector_funcs trigger5_connector_funcs = {
        .fill_modes = drm_helper_probe_single_connector_modes,
        .destroy = drm_connector_cleanup,
        .detect = trigger5_detect,
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
        .atomic_create_state = drm_atomic_helper_connector_create_state,
+#endif
        .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
        .atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 };
@@ -839,7 +865,9 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        struct trigger5_device *trigger5;
        struct usb_endpoint_descriptor *bulk_out;
        struct drm_device *dev;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
        struct device *dma_dev;
+#endif
        struct usb_device *udev = interface_to_usbdev(interface);
        /* Heuristic: Presence of audio interfaces indicates HDMI. */
        bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
@@ -869,6 +897,7 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        if (ret)
                return ret;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
        dma_dev = usb_intf_get_dma_device(interface);
        if (dma_dev) {
                drm_dev_set_dma_dev(dev, dma_dev);
@@ -877,6 +906,7 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                drm_warn(dev,
                         "buffer sharing not supported"); /* not an error */
        }
+#endif
 
        ret = drmm_mode_config_init(dev);
        if (ret)
@@ -956,7 +986,15 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        if (ret)
                goto err_poll_fini;
 
+       /*
+        * Kernels without DRM_FBDEV_SHMEM_DRIVER_OPS (6.12, 7.0/7.1) do not
+        * know the fbdev_probe callback, so use the older setup helper.
+        */
+#if defined(DRM_FBDEV_SHMEM_DRIVER_OPS)
        drm_client_setup(dev, NULL);
+#else
+       drm_fbdev_shmem_setup(dev, 32);
+#endif
 
        return 0;
 
