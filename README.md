@@ -31,10 +31,8 @@ Vendor installers are not kept in this repo (they are proprietary); see
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20.
 - Driver installed via DKMS as `trigger5/1.0`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
-- Local fixes for the EDID-read race and partial-frame updates are in
-  `linux-trigger5/trigger5.c` (see below). Portrait rotation is expected to work
-  after the patched module is loaded; if not, native plane rotation is the next
-  step.
+- Native plane rotation (0/90/180/270) is supported; rotated frames are
+  converted in the driver and sent as full-frame updates.
 
 ## Quick start
 
@@ -52,8 +50,8 @@ After boot:
 
 ```sh
 lsmod | grep trigger5
-ls /sys/class/drm/                 # expect card1-VGA-1
-cat /sys/class/drm/card1-VGA-1/status   # "connected"
+ls /sys/class/drm/                 # cardN-VGA-1, N depends on probe order
+cat /sys/class/drm/card*-VGA-1/status   # "connected"
 DISPLAY=:0 xrandr --query | grep VGA
 ```
 
@@ -329,26 +327,29 @@ driver never calls `request_firmware()`.
 - **`evdi` is not required.** `trigger5` is a standalone DRM driver; the
   `evdi-dkms` package is only needed by MCT's Trigger 6 userspace daemon.
 
-### Local changes (captured in `trigger5-edid-fullframe.patch`)
+### Local changes (captured in `trigger5-local.patch`)
 
 1. **EDID read once at probe, cached.** The adapter corrupts the EDID control
    reply if it arrives while bulk transfers are running (`EDID block 0 …
    checksum is invalid`). Re-reading on every `get_modes` wiped the connector's
-   mode list and dropped the output to 1024×768 on any re-probe, e.g. rotation.
-2. **Full frame after enable / framebuffer change.** Prevents stale rows when
-   X allocates a new framebuffer for software rotation.
+   mode list and dropped the output to 1024×768 on any re-probe.
+2. **Full frame after enable, framebuffer change or rotation change.**
+   Prevents stale rows when X allocates a new framebuffer or the plane rotation
+   changes.
 3. **Damage clipped to the visible source rect**, and the latched
    `needs_reset` flag cleared after a successful mode re-init.
+4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
+   non-zero rotations are converted in the driver and sent as full frames.
 
 These are local until the driver lands upstream.
 
 ### Rotation
 
-X11/KWin rotate this output in software (the DRM plane does not advertise
-rotation). With the fixes above the EDID survives and the panel gets a complete
-repaint. If the picture is still geometrically wrong after that, the next step
-is native plane rotation in the driver (rotation property + rotated conversion
-and damage mapping).
+The primary plane advertises `DRM_MODE_ROTATE_0/90/180/270`, so X11/KWin can
+use DRM plane rotation instead of a software shadow. Non-zero rotations are
+converted in the driver (XRGB8888 → RGB888) and sent as full-frame updates;
+`rotate-0` keeps the damage-based fast path. Portrait therefore works, at the
+cost of full-frame bandwidth while rotated.
 
 ---
 
@@ -362,11 +363,12 @@ where noted.
 ```sh
 xrandr --listproviders
 xrandr --query | sed -n '1p;/connected/p'
-cat /sys/class/drm/card1-VGA-1/status          # "connected"
-cat /sys/class/drm/card1-VGA-1/modes | head    # 1920x1080 ...
+cat /sys/class/drm/card*-VGA-1/status          # "connected"
+cat /sys/class/drm/card*-VGA-1/modes | head    # 1920x1080 ...
 ```
 
-The kernel connector is `card1-VGA-1`; X11 names the same output `VGA-1-1`
+The kernel connector is `cardN-VGA-1` (the card number depends on probe order);
+X11 names the same output `VGA-1-1`
 (the modesetting driver appends a provider suffix, so do not be surprised if it
 is plain `VGA-1` on another setup).
 
@@ -390,7 +392,7 @@ and let the server normalise the origin.
 xrandr --output VGA-1-1 --rotate left        # 90° counter-clockwise
 sleep 3
 xrandr --query | grep VGA-1-1
-cat /sys/class/drm/card1-VGA-1/modes | head -3
+cat /sys/class/drm/card*-VGA-1/modes | head -3
 sudo dmesg | grep -i -E 'trigger5|edid' | tail -20
 ```
 
@@ -417,7 +419,7 @@ xrandr --output VGA-1-1 --mode 1920x1080 --pos 0x0
 
 ### Quick regression checklist
 
-- [ ] `card1-VGA-1` reports `connected`
+- [ ] `card*-VGA-1` reports `connected`
 - [ ] `xrandr` offers `1920x1080`
 - [ ] rotate left, right and back to normal
 - [ ] after each rotation the mode list is intact and `dmesg` is clean
@@ -521,10 +523,10 @@ runners:
 |---|---|
 | No `card1` after boot | `lsmod \| grep trigger5`; `sudo dmesg \| grep -i trigger5`; check `/etc/modules` contains `trigger5`. |
 | Module won't unload | It is in use by X/DRM. Stop the display manager or reboot. |
-| Panel stays black | Check `cat /sys/class/drm/card1-VGA-1/status`; try `xrandr --output VGA-1-1 --auto`. |
+| Panel stays black | Check `cat /sys/class/drm/card*-VGA-1/status`; try `xrandr --output VGA-1-1 --auto`. |
 | Output falls back to 1024×768 / `0mm x 0mm` | EDID read failed. The patched driver caches the EDID; if it still happens, replug the dongle or `sudo modprobe -r trigger5 && sudo modprobe trigger5`. |
 | `EDID … checksum is invalid` in dmesg | Same race; fixed by the cached-EDID change. |
-| Garbled / stale picture after rotation | Fixed by the full-frame change; if it persists, native rotation is needed. |
+| Garbled / stale picture after rotation | Native rotation sends full frames. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
 | `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0_all.deb`, or `sudo ./install.sh`). |
@@ -572,7 +574,7 @@ GPL compatibility is expected regardless.
 Provenance: the copy here came from the public dri-devel patch series. The
 mail-archive line wrapping and tab expansion were repaired, soft-wrapped lines
 were rejoined, and an obfuscated `MODULE_AUTHOR` address was restored. The
-functional changes are isolated in `linux-trigger5/trigger5-edid-fullframe.patch`.
+functional changes are isolated in `linux-trigger5/trigger5-local.patch`.
 
 ### Our work: GPL-2.0-only
 

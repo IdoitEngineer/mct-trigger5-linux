@@ -11,7 +11,7 @@ how the adapter works, firmware notes and troubleshooting.
 
 - Host: Devuan 6 (excalibur), kernel 7.3.3, X11 + KDE, no systemd
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
-- Result: `card1-VGA-1` probes, EDID/DDC read returns the mode list, modeset
+- Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
 - Installed with DKMS as `trigger5/1.0`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
@@ -25,18 +25,20 @@ driver.
 
 ## Local changes relative to upstream v6
 
-`trigger5.c` carries local fixes, captured in `trigger5-edid-fullframe.patch`:
+`trigger5.c` carries local fixes, captured in `trigger5-local.patch`:
 
 1. **EDID is read once during probe and cached.** The adapter returns corrupt
    EDID replies (`checksum is invalid`) if the vendor read is issued while
    bulk frame transfers are running. `get_modes` now reuses the cached EDID
    instead of re-reading it, so a re-probe (e.g. when rotating the output) can
    no longer wipe the connector's mode list.
-2. **A full frame is pushed after a modeset and whenever the framebuffer
-   changes** (X allocates a new framebuffer for software rotation). Previously
-   only damaged rects were sent, leaving stale rows on the panel.
+2. **A full frame is pushed after a modeset, a rotation change, or when the
+   framebuffer changes.** Previously only damaged rects were sent, leaving
+   stale rows on the panel.
 3. **Damage is clipped to the visible source rect**, and the latched
    `needs_reset` flag is cleared after a successful mode re-initialisation.
+4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
+   rotated output is converted in the driver and sent as full frames.
 
 These are local workarounds until the driver lands upstream.
 
@@ -114,7 +116,7 @@ ls /sys/class/drm/
 xrandr --query            # X11
 ```
 
-The dongle should appear as a new `card1`/`card1-VGA-1` (or `card1-HDMI-A-1`)
+The dongle should appear as a new `cardN`/`cardN-VGA-1` (or `cardN-HDMI-A-1`)
 and show up in the desktop's display settings as an additional monitor.
 
 ## Optional: remove the wrong (Trigger 6) driver
