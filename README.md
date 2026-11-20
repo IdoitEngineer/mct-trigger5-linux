@@ -319,6 +319,9 @@ driver never calls `request_firmware()`.
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
 - Packaging: DKMS (`trigger5/1.0`) with a plain out-of-tree `Makefile`.
+- Requires Linux **7.3 or newer**: the driver uses DRM APIs added in 7.3.
+  `dkms.conf` sets `BUILD_EXCLUSIVE_KERNEL_MIN="7.3"` so DKMS skips older
+  installed kernels instead of failing their builds.
 - Upstream tested only the HDMI path; this unit is the VGA path and works.
 - **`evdi` is not required.** `trigger5` is a standalone DRM driver; the
   `evdi-dkms` package is only needed by MCT's Trigger 6 userspace daemon.
@@ -434,6 +437,7 @@ xrandr --output VGA-1-1 --mode 1920x1080 --pos 0x0
 | Garbled / stale picture after rotation | Fixed by the full-frame change; if it persists, native rotation is needed. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
+| `Bad return status for module build on kernel 7.2.x` / `6.12` | Expected: the driver needs kernel ≥ 7.3 (`atomic_create_state`, `drm/clients/drm_client_setup.h`). `dkms.conf` now declares `BUILD_EXCLUSIVE_KERNEL_MIN="7.3"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0_all.deb`, or `sudo ./install.sh`) and the errors stop. |
 
 Recovery if a rotation experiment leaves the output broken:
 

@@ -135,6 +135,10 @@ sudo ./uninstall.sh
 
 ## Notes
 
+- Kernel **7.3 or newer** is required: the driver uses DRM APIs added in 7.3
+  (`atomic_create_state`, `drm/clients/drm_client_setup.h`). `dkms.conf` sets
+  `BUILD_EXCLUSIVE_KERNEL_MIN="7.3"`, so DKMS skips older installed kernels
+  instead of failing their builds.
 - The module is signed neither by DKMS (no MOK key configured) nor by the
   kernel; Secure Boot is disabled on this machine, so that is fine.
 - Kernel upgrades are handled by DKMS automatically.
