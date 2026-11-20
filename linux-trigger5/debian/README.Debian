@@ -1,0 +1,19 @@
+Building the package
+====================
+
+    dpkg-buildpackage -us -uc -b
+
+The result is one binary package, trigger5-dkms, which contains only the DKMS
+source under /usr/src/trigger5-1.0. Installing it runs DKMS against the running
+kernel's headers; the module is rebuilt automatically on kernel upgrades.
+
+Install:
+
+    sudo apt install ./trigger5-dkms_1.0_all.deb
+
+or, if apt complains about the absolute path:
+
+    sudo dpkg -i ../trigger5-dkms_1.0_all.deb
+    sudo apt-get -f install
+
+evdi is not needed: trigger5 is a standalone DRM driver.

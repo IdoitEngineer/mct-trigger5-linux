@@ -1,0 +1,21 @@
+# Kernel module build outputs
+*.o
+*.ko
+*.mod
+*.mod.c
+*.symvers
+*.order
+.*.cmd
+
+# DKMS/debhelper build state
+linux-trigger5/debian/.debhelper/
+linux-trigger5/debian/files
+linux-trigger5/debian/debhelper-build-stamp
+linux-trigger5/debian/trigger5-dkms/
+linux-trigger5/debian/*.substvars
+linux-trigger5/debian/*.debhelper.log
+
+# Package artefacts
+*.deb
+*.changes
+*.buildinfo

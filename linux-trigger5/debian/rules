@@ -1,0 +1,12 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (C) 2026 Jeringa
+
+# The package only ships DKMS source; the module is compiled on the target
+# machine by DKMS against the installed kernel headers.
+override_dh_auto_build:
+
+override_dh_auto_install:
+
+%:
+	dh $@ --with dkms

@@ -1,0 +1,7 @@
+trigger5 (1.0) unstable; urgency=medium
+
+  * Initial local Debian packaging.
+  * DKMS source for the MCT Trigger 5 USB display driver.
+  * Includes local EDID caching and full-frame fixes.
+
+ -- Jeringa <jeringa@example.com>  Fri, 20 Nov 2026 13:00:00 +1300

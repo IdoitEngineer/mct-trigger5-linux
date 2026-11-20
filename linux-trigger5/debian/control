@@ -1,0 +1,22 @@
+Source: trigger5
+Section: kernel
+Priority: optional
+Maintainer: Jeringa <jeringa@example.com>
+Build-Depends: debhelper-compat (= 13), dkms
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: trigger5-dkms
+Architecture: all
+Depends: dkms (>= 2.1.0.0), ${misc:Depends}
+Description: DKMS source for the MCT Trigger 5 USB display driver
+ Kernel DRM/KMS driver for Magic Control Technology Trigger 5 USB 3.0
+ display adapters (USB ID 0711:58xx), including the MCT USB3.0 External
+ Graphics Device (0711:5805).
+ .
+ The driver implements modesetting, EDID retrieval over the adapter's
+ DDC tunnel, and USB bulk frame transfers. This package carries the DKMS
+ source, so the module is built against the installed kernel headers at
+ install time and rebuilt automatically on kernel upgrades.
+ .
+ Note: this is unrelated to evdi; it is a standalone DRM driver.
