@@ -410,7 +410,7 @@ int display_set_mode(struct display *d, struct dumb_fb *fb,
 		     uint32_t drm_rotation)
 {
 	drmModeAtomicReq *req = NULL;
-	uint32_t crtc_id_prop, mode_id_prop, active_prop, conn_crtc_prop;
+	uint32_t mode_id_prop, active_prop, conn_crtc_prop;
 	uint32_t fb_id_prop, plane_crtc_prop, rotation_prop;
 	uint32_t src_x, src_y, src_w, src_h;
 	uint32_t crtc_x, crtc_y, crtc_w, crtc_h;
@@ -427,8 +427,6 @@ int display_set_mode(struct display *d, struct dumb_fb *fb,
 		goto out;
 	}
 
-	crtc_id_prop = prop_id(d->fd, d->crtc_id, DRM_MODE_OBJECT_CRTC,
-			       "CRTC_ID");
 	mode_id_prop = prop_id(d->fd, d->crtc_id, DRM_MODE_OBJECT_CRTC,
 			       "MODE_ID");
 	active_prop = prop_id(d->fd, d->crtc_id, DRM_MODE_OBJECT_CRTC,
@@ -450,13 +448,15 @@ int display_set_mode(struct display *d, struct dumb_fb *fb,
 	crtc_w = prop_id(d->fd, d->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
 	crtc_h = prop_id(d->fd, d->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
 
-	if (!crtc_id_prop || !mode_id_prop || !conn_crtc_prop || !fb_id_prop ||
+	if (!mode_id_prop || !conn_crtc_prop || !fb_id_prop ||
 	    !plane_crtc_prop || !src_w || !src_h || !crtc_w || !crtc_h) {
-		fprintf(stderr, "missing atomic properties on this driver\n");
+		fprintf(stderr,
+			"missing atomic properties (MODE_ID=%u connector CRTC_ID=%u FB_ID=%u plane CRTC_ID=%u SRC_W=%u SRC_H=%u CRTC_W=%u CRTC_H=%u)\n",
+			mode_id_prop, conn_crtc_prop, fb_id_prop, plane_crtc_prop,
+			src_w, src_h, crtc_w, crtc_h);
 		goto out;
 	}
 
-	drmModeAtomicAddProperty(req, d->crtc_id, crtc_id_prop, d->crtc_id);
 	drmModeAtomicAddProperty(req, d->crtc_id, mode_id_prop, blob_id);
 	if (active_prop)
 		drmModeAtomicAddProperty(req, d->crtc_id, active_prop, 1);
