@@ -254,7 +254,7 @@ trigger5.ko: convert damaged region to RGB888
 | `GET_STATUS` | `0xA6` | monitor connected? |
 | `GET_EDID` | `0xA8` | read EDID block from the monitor (DDC tunnel) |
 | `SET_MODE` | `0xC3` | packed timing + PLL programming |
-| `SET_CURSOR_POSITION` | `0xC8` | cursor position |
+| `SET_CURSOR_POSITION` | `0xC8` | hardware cursor enable/position |
 | `FIRMWARE_RESET` | `0xD1` | re-initialise on-device firmware |
 
 Exact field layouts, the 35-byte `SET_MODE` payload and the 20-byte bulk header
@@ -340,23 +340,26 @@ driver never calls `request_firmware()`.
    `needs_reset` flag cleared after a successful mode re-init.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
    non-zero rotations are converted in the driver and sent as full frames.
-5. **DRM cursor plane.** The cursor image is composited into the USB frame by
-   the driver instead of being drawn as an X software cursor into the shared
-   PRIME framebuffer. This removes the duplicate/offset cursor seen on the
-   NVIDIA outputs when the Trigger 5 output was enabled. Cursor compositing is
-   only implemented for an unrotated primary plane.
+5. **DRM cursor plane + hardware cursor.** The driver exposes a 64×64
+   ARGB8888 cursor plane and uses the adapter's fixed hardware cursor.
+   X therefore does not draw a software cursor into the shared PRIME
+   framebuffer, which removed the duplicate/offset cursor seen on the NVIDIA
+   outputs. Positions are sent with vendor request `0xC8`; the cursor is
+   enabled by writing `0xE868 = 1` after the mode set.
 
 ### Cursor
 
-X no longer needs to draw a software cursor for the Trigger 5 sink: the driver
-exposes a 64×64 ARGB8888 cursor plane and composites the image into the device
-frame (including erasing the old position). This is what prevents the stray
-cursor on the NVIDIA screen. On commits that also repaint the primary plane,
-the cursor rectangle is redrawn last in `atomic_flush()`.
+The adapter has a **fixed hardware cursor image** (an arrow); the Windows
+driver never uploads a cursor bitmap. X can move it and hide it, but the
+shape/theme will not follow the X cursor theme. Positions are signed 16-bit
+values; for negative coordinates the Windows driver sends `value - 1`, and
+the Linux driver does the same.
 
-With native plane rotation (a compositor that sets the plane rotation property)
-cursor compositing is currently disabled; the compositor is expected to draw
-the cursor into the primary framebuffer in that case.
+With native plane rotation (a compositor that sets the plane rotation
+property) the adapter’s cursor is still positioned by the driver; with X’s
+software rotation, X may or may not use the cursor plane, which is why
+`full_frame_period_ms` remains useful if the cursor or damage tracking
+misbehaves.
 
 These are local until the driver lands upstream.
 
@@ -370,9 +373,10 @@ Xorg 1.21's modesetting driver does **not** use the plane property; it rotates
 in software. The plane then stays at rotate-0, and X's cursor damage never
 reaches the driver, so:
 
-- `full_frame_always=0` — fast damage updates, but the cursor can disappear
-  (and rotated output can show intermittent corruption);
-- `full_frame_always=1` — cursor and corruption correct, but every commit sends
+- `full_frame_always=0` — fast damage updates; rotated output can show
+  intermittent corruption (and if X falls back to a software cursor, the old
+  duplicate can return);
+- `full_frame_always=1` — corruption correct, but every commit sends
   a full 1080p frame, which is very slow over USB;
 - `full_frame_period_ms=N` — recommended X11 compromise: damage updates plus a
   full frame at most every N ms, so the cursor reappears and corruption heals.

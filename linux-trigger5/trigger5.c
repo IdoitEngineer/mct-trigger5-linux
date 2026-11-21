@@ -166,6 +166,7 @@ struct trigger5_bulk_header {
 #define TRIGGER5_REQUEST_SET_MODE              0xC3
 #define TRIGGER5_REQUEST_SET_REGISTER          0xC4
 #define TRIGGER5_REQUEST_SET_CURSOR_POSITION   0xC8
+#define TRIGGER5_CURSOR_ENABLE_REG              0xE868
 #define TRIGGER5_REQUEST_FIRMWARE_RESET                0xD1
 
 #define TRIGGER5_BULK_TIMEOUT_MS               2000
@@ -744,139 +745,48 @@ static const u32 trigger5_plane_formats[] = {
 };
 
 /*
- * Send one rectangle of the primary framebuffer, optionally compositing the
- * cursor image on top. Used by the cursor plane, which has no dedicated
- * hardware overlay on this device.
+ * The adapter has a fixed hardware cursor image. X (and other compositors)
+ * only get to set its position; the shape cannot be uploaded.
  */
-static void trigger5_send_rect(struct trigger5_device *trigger5,
-			       struct drm_plane_state *primary,
-			       struct drm_plane_state *cursor,
-			       const struct drm_rect *rect)
+static void trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
+				    u16 index, const void *data, u16 size)
 {
-	struct trigger5_transfer *transfer;
-	struct trigger5_bulk_header *header;
-	struct drm_shadow_plane_state *pshadow, *cshadow = NULL;
-	const struct iosys_map *pmap, *cmap = NULL;
-	struct drm_rect dst = *rect, pdst, csrc, cdst;
-	struct drm_rect psrc;
-	unsigned int ppitch, cpitch = 0;
-	int width, height, x, y, src_x, src_y;
-	size_t payload;
-	u8 *out;
+	struct usb_device *udev = interface_to_usbdev(trigger5->intf);
+	int ret;
 
-	if (!primary || !primary->fb || !primary->crtc)
+	ret = usb_control_msg_send(udev, 0, TRIGGER5_REQUEST_SET_CURSOR_POSITION,
+				   USB_DIR_OUT | USB_TYPE_VENDOR |
+					   USB_RECIP_DEVICE,
+				   value, index, data, size,
+				   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
+	if (ret)
+		drm_warn_once(&trigger5->drm, "cursor request failed: %d\n", ret);
+}
+
+static void trigger5_cursor_atomic_update(struct drm_plane *plane,
+					  TRIGGER5_ATOMIC_COMMIT *state)
+{
+	struct drm_plane_state *new_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct trigger5_device *trigger5 = to_trigger5(plane->dev);
+	u8 disable[4] = { 0, 0, 0, 0 };
+	u16 value, index;
+	int x, y;
+
+	if (!new_state->fb || !new_state->crtc) {
+		trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
+					disable, sizeof(disable));
 		return;
-
-	/* Rotation-aware cursor compositing is not implemented. */
-	if (primary->rotation != DRM_MODE_ROTATE_0)
-		return;
-
-	pdst = primary->dst;
-	if (!drm_rect_intersect(&dst, &pdst))
-		return;
-
-	width = drm_rect_width(&dst);
-	height = drm_rect_height(&dst);
-	if (width <= 0 || height <= 0)
-		return;
-
-	payload = array3_size(width, height, 3);
-	if (payload + sizeof(*header) > TRIGGER5_URB_BUF_SIZE)
-		return;
-
-	psrc = drm_plane_state_src(primary);
-	pshadow = to_drm_shadow_plane_state(primary);
-	pmap = &pshadow->data[0];
-	ppitch = primary->fb->pitches[0];
-	src_x = (psrc.x1 >> 16) + (dst.x1 - pdst.x1);
-	src_y = (psrc.y1 >> 16) + (dst.y1 - pdst.y1);
-
-	if (cursor && cursor->fb) {
-		cshadow = to_drm_shadow_plane_state(cursor);
-		cmap = &cshadow->data[0];
-		cpitch = cursor->fb->pitches[0];
-		csrc = drm_plane_state_src(cursor);
-		cdst = cursor->dst;
 	}
 
-	if (drm_gem_fb_begin_cpu_access(primary->fb, DMA_FROM_DEVICE) < 0)
-		return;
-	if (cursor && cursor->fb &&
-	    drm_gem_fb_begin_cpu_access(cursor->fb, DMA_FROM_DEVICE) < 0)
-		goto out_primary;
+	x = new_state->dst.x1;
+	y = new_state->dst.y1;
 
-	transfer = trigger5_get_next_urb(trigger5);
-	if (IS_ERR(transfer))
-		goto out_access;
+	/* Match the Windows driver: negative coordinates get -1. */
+	value = (x >= 0) ? (u16)x : (u16)(x - 1);
+	index = (y >= 0) ? (u16)y : (u16)(y - 1);
 
-	header = transfer->urb->transfer_buffer;
-	header->magic = 0xfb;
-	header->length = 0x14;
-	header->counter = cpu_to_le16((trigger5->frame_counter++) & 0xfff);
-	header->horizontal_offset = cpu_to_le16(dst.x1);
-	header->vertical_offset = cpu_to_le16(dst.y1);
-	header->width = cpu_to_le16(width);
-	header->height = cpu_to_le16(height);
-	header->payload_length = cpu_to_le32((u32)payload);
-	header->flags = 0x1;
-	header->unknown1 = 0;
-	header->unknown2 = 0;
-	header->checksum = trigger5_bulk_header_checksum(header);
-
-	if (trigger5_submit_urb(transfer, sizeof(*header)))
-		goto out_access;
-
-	transfer = trigger5_get_next_urb(trigger5);
-	if (IS_ERR(transfer))
-		goto out_access;
-
-	out = transfer->urb->transfer_buffer;
-	for (y = dst.y1; y < dst.y2; y++) {
-		for (x = dst.x1; x < dst.x2; x++) {
-			int px = src_x + (x - dst.x1);
-			int py = src_y + (y - dst.y1);
-			u32 p = iosys_map_rd(pmap, py * ppitch + px * 4, u32);
-			u8 r = (p >> 16) & 0xff;
-			u8 g = (p >> 8) & 0xff;
-			u8 b = p & 0xff;
-
-			if (cmap && x >= cdst.x1 && x < cdst.x2 &&
-			    y >= cdst.y1 && y < cdst.y2) {
-				int cx = (csrc.x1 >> 16) + (x - cdst.x1);
-				int cy = (csrc.y1 >> 16) + (y - cdst.y1);
-				u32 c = iosys_map_rd(cmap, cy * cpitch + cx * 4,
-						     u32);
-				u8 a = (c >> 24) & 0xff;
-
-				if (a == 0xff) {
-					r = (c >> 16) & 0xff;
-					g = (c >> 8) & 0xff;
-					b = c & 0xff;
-				} else if (a) {
-					u8 cr = (c >> 16) & 0xff;
-					u8 cg = (c >> 8) & 0xff;
-					u8 cb = c & 0xff;
-
-					r = (cr * a + r * (255 - a)) / 255;
-					g = (cg * a + g * (255 - a)) / 255;
-					b = (cb * a + b * (255 - a)) / 255;
-				}
-			}
-
-			*out++ = r;
-			*out++ = g;
-			*out++ = b;
-		}
-	}
-
-	if (trigger5_submit_urb(transfer, payload))
-		goto out_access;
-
-out_access:
-	if (cursor && cursor->fb)
-		drm_gem_fb_end_cpu_access(cursor->fb, DMA_FROM_DEVICE);
-out_primary:
-	drm_gem_fb_end_cpu_access(primary->fb, DMA_FROM_DEVICE);
+	trigger5_cursor_control(trigger5, value, index, NULL, 0);
 }
 
 static int trigger5_cursor_atomic_check(struct drm_plane *plane,
@@ -903,47 +813,10 @@ static int trigger5_cursor_atomic_check(struct drm_plane *plane,
 	return 0;
 }
 
-static void trigger5_crtc_atomic_flush(struct drm_crtc *crtc,
-				      TRIGGER5_ATOMIC_COMMIT *state)
-{
-	struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
-	struct drm_plane_state *primary =
-		drm_atomic_get_new_plane_state(state, &trigger5->plane);
-	struct drm_plane_state *cursor_new =
-		drm_atomic_get_new_plane_state(state, &trigger5->cursor);
-	struct drm_plane_state *cursor_old =
-		drm_atomic_get_old_plane_state(state, &trigger5->cursor);
-	struct drm_rect rect;
-	int idx;
-
-	if (!primary || !primary->fb)
-		return;
-	if (!drm_dev_enter(crtc->dev, &idx))
-		return;
-
-	/* Erase the previous cursor position if it moved or was disabled. */
-	if (cursor_old && cursor_old->fb &&
-	    (!cursor_new || !cursor_new->fb ||
-	     !drm_rect_equals(&cursor_old->dst, &cursor_new->dst))) {
-		rect = cursor_old->dst;
-		trigger5_send_rect(trigger5, primary, NULL, &rect);
-	}
-
-	/*
-	 * Always redraw a visible cursor last: primary plane updates (and full
-	 * frames) can overwrite its area.
-	 */
-	if (cursor_new && cursor_new->fb) {
-		rect = cursor_new->dst;
-		trigger5_send_rect(trigger5, primary, cursor_new, &rect);
-	}
-
-	drm_dev_exit(idx);
-}
-
 static const struct drm_plane_helper_funcs trigger5_cursor_helper_funcs = {
 	DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
 	.atomic_check = trigger5_cursor_atomic_check,
+	.atomic_update = trigger5_cursor_atomic_update,
 };
 
 static const struct drm_plane_funcs trigger5_cursor_funcs = {
@@ -1058,6 +931,14 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        if (ret)
                goto err;
 
+       /* Enable the fixed hardware cursor (register 0xE868 = 1). */
+       data[0] = 1;
+       data[1] = 0;
+       data[2] = 0;
+       data[3] = 0;
+       trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
+                               data, sizeof(data));
+
        /*
         * A successful re-initialisation clears any latched transfer error
         * and makes the next plane update send a complete frame.
@@ -1094,6 +975,14 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        if (ret)
                drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
+
+       {
+               u8 off[4] = { 0, 0, 0, 0 };
+
+               trigger5_cursor_control(trigger5, 0,
+                                       TRIGGER5_CURSOR_ENABLE_REG, off,
+                                       sizeof(off));
+       }
 
        drm_dev_exit(idx);
 }
@@ -1134,7 +1023,6 @@ static const struct drm_crtc_helper_funcs trigger5_crtc_helper_funcs = {
        .atomic_disable = trigger5_crtc_atomic_disable,
        .atomic_check = drm_crtc_helper_atomic_check,
        .atomic_enable = trigger5_crtc_atomic_enable,
-       .atomic_flush = trigger5_crtc_atomic_flush,
 };
 
 static const struct drm_crtc_funcs trigger5_crtc_funcs = {

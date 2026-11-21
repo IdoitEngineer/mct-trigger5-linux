@@ -26,12 +26,15 @@ or `0xC0` (device→host, vendor, device).
 | Request | Code | Dir | wValue | wIndex | Length | Purpose |
 |---|---|---|---|---|---|---|
 | `KEEPALIVE` | `0x91` | IN | `0x0000` | `0x0000` | 1 | disarm keepalive at probe |
+| `GET_DEVICE_INFO` | `0xA1` | IN | `0x0000` | `0x0000` | up to 512 | device/interface descriptor |
+| `GET_MODES` | `0xA4` | IN | `0x0000` | `0x0000` | 420 | supported-mode table |
 | `GET_REGISTER` | `0xA5` | IN | `0x0000` | `0xEC34` | 4 | read register block |
 | `GET_STATUS` | `0xA6` | IN | `0x00FF` | `0x0003` | 2 | monitor status; `byte[1] == 1` means connected |
+| `GET_CAPS` | `0xA7` | IN | `0x0000` | `0x0000` | 4 | gated capability/feature word |
 | `GET_EDID` | `0xA8` | IN | block index | `0x0000` | block size | read one EDID block from the monitor (DDC tunnel) |
 | `SET_MODE` | `0xC3` | OUT | `0x0000` | `0x0000` | 35 | program timing + PLL (struct below) |
 | `SET_REGISTER` | `0xC4` | OUT | `0x0000` | `0xEC34` | 4 | write register block |
-| `SET_CURSOR_POSITION` | `0xC8` | OUT | — | — | — | defined, unused by this driver |
+| `SET_CURSOR_POSITION` | `0xC8` | OUT | X / `0` | Y / `0xE868` | 0 / 4 | move the hardware cursor, or write the cursor register |
 | `FIRMWARE_RESET` | `0xD1` | IN | `0x0000` / `0x0001` / `0x0201` | `0x0000` | 1 | re-initialise / disable on-device firmware |
 
 ### Mode-set sequence
@@ -82,6 +85,115 @@ pixel_clock = 10 MHz * mul1 * mul2 / (prediv * div1 * div2)
 
 The driver searches that space for the closest match and rejects modes whose
 error exceeds 10 000 ppm (1 %).
+
+### Cursor (0xC8)
+
+The adapter has a **fixed hardware cursor image**; no cursor-bitmap upload was
+observed from the Windows driver or in the Linux path.
+
+Enable, once after the mode set:
+
+```
+0xC8, OUT vendor device
+wValue  0x0000
+wIndex  0xE868
+wLength 4
+data    01 00 00 00
+```
+
+Position, for every cursor move:
+
+```
+0xC8, OUT vendor device
+wValue  X
+wIndex  Y
+wLength 0
+```
+
+`X` and `Y` are signed 16-bit values. The Windows driver adjusts negative
+coordinates by one (e.g. `x = -1` is sent as `0xFFFE`); the Linux driver does
+the same. Hiding the cursor is done with the `0xE868` register (`0`) or by
+moving it off-screen; the Windows capture only shows the negative-coordinate
+form.
+
+### Device descriptor (0xA1)
+
+Read-only blob; the Windows driver requests up to 512 bytes and parses the
+first 10. Observed 14-byte reply:
+
+```
+02 01 05 00 08 04 10 01 01 12 01 0d 0a 1d
+```
+
+| Offset | Use |
+|---|---|
+| +0..7 | opaque 8-byte ID; byte 0 = interface type (2), byte 1 = subtype (1) |
+| +3/+4 | version, `(byte3 << 8) | byte4` = `0x0008` |
+| +8..9 | little-endian `0x1201` |
+| +10..13 | unused by the Windows parser |
+
+### Supported-mode table (0xA4)
+
+Read-only table; request length is 420, the reply carries 4 + 8 × count bytes.
+
+```
+u16be count
+u16   reserved
+count × 8 bytes:
+    u8    refresh_hz
+    u8    timing_id
+    u8    bpp        (24)
+    u8    index
+    u16le height
+    u16le width
+```
+
+Observed for this adapter (19 entries):
+
+```
+index  mode        refresh
+0      640x480     60
+1      800x600     60
+3      1024x768    60
+4      1152x864    75
+5      1280x720    60
+6      1280x768    60
+7      1280x800    60
+8      1280x960    60
+9      1280x1024   60
+10     1360x768    60
+12     1400x1050   60
+13     1440x900    60
+14     1600x1200   60
+15     1680x1050   60
+17     1920x1080   60
+18     1920x1200   60
+20     2048x1152   60
+23     1366x768    60
+27     1600x900    60
+```
+
+All are landscape; there is no portrait entry. `index` is a table ID, not a
+sequence number.
+
+### Capability word (0xA7)
+
+Read-only 4-byte little-endian value. The Windows driver queries it when the
+device version from `0xA1` is `>= 0x3a`, or when the interface type/subtype is
+not 2/0:
+
+```c
+if (version >= 0x3a || iface[0] != 2 || iface[1] != 0)
+        caps = read_0xA7();
+if (caps & 1) feature0 = 1;
+if (caps & 2) feature1 = 1;
+if (caps & 4) feature2 = 1;
+if (caps & 8) feature3 = 1;
+```
+
+This adapter (version 8, interface 2/1) is queried and returns
+`0x00000800`; none of the four feature bits are set. The `0x800` bit is not
+used by this code path.
 
 ## Bulk frame protocol
 
