@@ -44,7 +44,11 @@ driver.
    `0xE868 = 1` after mode set). This keeps X from drawing a software cursor
    into the shared PRIME framebuffer and fixes the duplicate cursor on NVIDIA
    outputs. The device’s cursor image is fixed (arrow); shapes are not
-   uploaded.
+   uploaded. Cursor requests are only sent while the display is configured,
+   and a failed enable is retried on the next update.
+6. **No automatic USB reset after a transfer error.** Resetting the adapter
+   could take down the whole xHCI controller, so the driver now latches the
+   error, stops I/O, and asks for a replug or unbind/rebind instead.
 
 These are local workarounds until the driver lands upstream.
 

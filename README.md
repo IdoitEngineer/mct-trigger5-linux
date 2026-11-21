@@ -345,7 +345,12 @@ driver never calls `request_firmware()`.
    X therefore does not draw a software cursor into the shared PRIME
    framebuffer, which removed the duplicate/offset cursor seen on the NVIDIA
    outputs. Positions are sent with vendor request `0xC8`; the cursor is
-   enabled by writing `0xE868 = 1` after the mode set.
+   enabled by writing `0xE868 = 1` after the mode set. Cursor requests are
+   gated on the display being configured, and a failed enable is retried on
+   the next update.
+6. **No automatic USB reset after a transfer error.** A USB port reset could
+   take the whole xHCI controller down with it, so the driver latches the
+   error, stops I/O, and asks for a replug or unbind/rebind instead.
 
 ### Cursor
 

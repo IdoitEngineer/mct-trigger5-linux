@@ -106,6 +106,9 @@ struct trigger5_device {
        /* Whether the adapter's fixed hardware cursor is enabled. */
        bool cursor_enabled;
 
+       /* Whether the display has been configured and is streaming. */
+       bool display_on;
+
        /*
         * EDID read at probe time. Kept for the lifetime of the device:
         * reading it while bulk transfers are running returns corrupt data.
@@ -296,13 +299,20 @@ static u64 trigger5_calculate_pll(struct trigger5_pll *pll, int clock)
        return best_err;
 }
 
+/*
+ * Latch a transfer failure and stop further I/O.
+ *
+ * Do not queue a USB port reset here: resetting this adapter was observed to
+ * take the whole xHCI controller down (including unrelated devices on the same
+ * controller).  The device needs a physical replug or an explicit unbind/bind
+ * to recover, which the user can do once the failure has been seen in dmesg.
+ */
 static void trigger5_reset(struct trigger5_device *trigger5, int err)
 {
        if (!atomic_xchg(&trigger5->needs_reset, 1))
-               usb_queue_reset_device(trigger5->intf);
-
-       drm_err(&trigger5->drm, "USB transfer failed: %d, resetting adapter\n",
-               err);
+               drm_err(&trigger5->drm,
+                       "USB transfer failed: %d, adapter stopped; replug it or unbind/rebind the driver\n",
+                       err);
 }
 
 static void trigger5_urb_complete(struct urb *urb)
@@ -751,8 +761,8 @@ static const u32 trigger5_plane_formats[] = {
  * The adapter has a fixed hardware cursor image. X (and other compositors)
  * only get to set its position; the shape cannot be uploaded.
  */
-static void trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
-				    u16 index, const void *data, u16 size)
+static int trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
+				   u16 index, const void *data, u16 size)
 {
 	struct usb_device *udev = interface_to_usbdev(trigger5->intf);
 	int ret;
@@ -764,16 +774,59 @@ static void trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
 				   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
 	if (ret)
 		drm_warn_once(&trigger5->drm, "cursor request failed: %d\n", ret);
+	return ret;
 }
 
-static void trigger5_cursor_set_enabled(struct trigger5_device *trigger5,
-					bool enable)
+static int trigger5_cursor_set_enabled(struct trigger5_device *trigger5,
+				       bool enable)
 {
 	u8 value[4] = { enable ? 1 : 0, 0, 0, 0 };
+	int ret;
 
-	trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
-				value, sizeof(value));
-	trigger5->cursor_enabled = enable;
+	ret = trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
+				      value, sizeof(value));
+
+	/*
+	 * Only latch a successful enable so the next cursor update retries it.
+	 * A failed disable still marks the cursor as off: the firmware resets it
+	 * when the display is reconfigured, and retrying would just stall again.
+	 */
+	if (!ret || !enable)
+		trigger5->cursor_enabled = enable;
+	if (ret && enable)
+		drm_warn_once(&trigger5->drm,
+			      "cursor enable failed: %d\n", ret);
+
+	return ret;
+}
+
+/* Push the cursor state; only valid while the display is configured. */
+static void trigger5_cursor_apply(struct trigger5_device *trigger5,
+				  struct drm_plane_state *state)
+{
+	u16 value, index;
+	int x, y, ret;
+
+	if (!state || !state->fb || !state->crtc)
+		return;
+
+	if (!trigger5->cursor_enabled) {
+		ret = trigger5_cursor_set_enabled(trigger5, true);
+		if (ret)
+			return;
+	}
+
+	x = state->dst.x1;
+	y = state->dst.y1;
+
+	/* Match the Windows driver: negative coordinates get -1. */
+	value = (x >= 0) ? (u16)x : (u16)(x - 1);
+	index = (y >= 0) ? (u16)y : (u16)(y - 1);
+
+	ret = trigger5_cursor_control(trigger5, value, index, NULL, 0);
+	if (ret)
+		drm_warn_once(&trigger5->drm,
+			      "cursor position failed: %d\n", ret);
 }
 
 static void trigger5_cursor_atomic_update(struct drm_plane *plane,
@@ -782,8 +835,6 @@ static void trigger5_cursor_atomic_update(struct drm_plane *plane,
 	struct drm_plane_state *new_state =
 		drm_atomic_get_new_plane_state(state, plane);
 	struct trigger5_device *trigger5 = to_trigger5(plane->dev);
-	u16 value, index;
-	int x, y;
 
 	if (!new_state->fb || !new_state->crtc) {
 		if (trigger5->cursor_enabled)
@@ -791,17 +842,15 @@ static void trigger5_cursor_atomic_update(struct drm_plane *plane,
 		return;
 	}
 
-	if (!trigger5->cursor_enabled)
-		trigger5_cursor_set_enabled(trigger5, true);
+	/*
+	 * Plane updates run before the CRTC enable in the same commit, so the
+	 * cursor request must wait until the display is actually configured.
+	 * trigger5_crtc_atomic_enable() applies the initial position.
+	 */
+	if (!trigger5->display_on)
+		return;
 
-	x = new_state->dst.x1;
-	y = new_state->dst.y1;
-
-	/* Match the Windows driver: negative coordinates get -1. */
-	value = (x >= 0) ? (u16)x : (u16)(x - 1);
-	index = (y >= 0) ? (u16)y : (u16)(y - 1);
-
-	trigger5_cursor_control(trigger5, value, index, NULL, 0);
+	trigger5_cursor_apply(trigger5, new_state);
 }
 
 static int trigger5_cursor_atomic_check(struct drm_plane *plane,
@@ -946,19 +995,23 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        if (ret)
                goto err;
 
-       /* Enable the fixed hardware cursor (register 0xE868 = 1). */
-       trigger5_cursor_set_enabled(trigger5, true);
-
        /*
         * A successful re-initialisation clears any latched transfer error
         * and makes the next plane update send a complete frame.
         */
        atomic_set(&trigger5->needs_reset, 0);
        trigger5->full_frame = true;
+       trigger5->display_on = true;
+
+       /* The cursor plane update ran before this point; apply it now. */
+       trigger5_cursor_apply(trigger5,
+                             drm_atomic_get_new_plane_state(state,
+                                                            &trigger5->cursor));
 
        goto exit;
 
 err:
+       trigger5->display_on = false;
        drm_err_once(&trigger5->drm, "failed to configure display mode: %d\n", ret);
 exit:
        drm_dev_exit(idx);
@@ -986,7 +1039,17 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
        if (ret)
                drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
 
-       trigger5_cursor_set_enabled(trigger5, false);
+       trigger5->display_on = false;
+
+       /*
+        * Only ask the adapter to hide the cursor if the display really went
+        * down; after a failed disable the control endpoint is usually wedged
+        * and another request would just time out.
+        */
+       if (!ret)
+               trigger5_cursor_set_enabled(trigger5, false);
+       else
+               trigger5->cursor_enabled = false;
 
        drm_dev_exit(idx);
 }
@@ -1258,6 +1321,13 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                return ret;
 
        drm_plane_helper_add(&trigger5->cursor, &trigger5_cursor_helper_funcs);
+
+       /* ARGB8888 framebuffers need an explicit blend mode. */
+       ret = drm_plane_create_blend_mode_property(&trigger5->cursor,
+                                                  BIT(DRM_MODE_BLEND_PREMULTI) |
+                                                  BIT(DRM_MODE_BLEND_COVERAGE));
+       if (ret)
+               return ret;
 
        ret = drm_crtc_init_with_planes(dev, &trigger5->crtc, &trigger5->plane,
                                        &trigger5->cursor, &trigger5_crtc_funcs,
