@@ -103,6 +103,9 @@ struct trigger5_device {
        /* jiffies of the last complete frame (full_frame_period_ms). */
        unsigned long last_full_frame;
 
+       /* Whether the adapter's fixed hardware cursor is enabled. */
+       bool cursor_enabled;
+
        /*
         * EDID read at probe time. Kept for the lifetime of the device:
         * reading it while bulk transfers are running returns corrupt data.
@@ -763,21 +766,33 @@ static void trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
 		drm_warn_once(&trigger5->drm, "cursor request failed: %d\n", ret);
 }
 
+static void trigger5_cursor_set_enabled(struct trigger5_device *trigger5,
+					bool enable)
+{
+	u8 value[4] = { enable ? 1 : 0, 0, 0, 0 };
+
+	trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
+				value, sizeof(value));
+	trigger5->cursor_enabled = enable;
+}
+
 static void trigger5_cursor_atomic_update(struct drm_plane *plane,
 					  TRIGGER5_ATOMIC_COMMIT *state)
 {
 	struct drm_plane_state *new_state =
 		drm_atomic_get_new_plane_state(state, plane);
 	struct trigger5_device *trigger5 = to_trigger5(plane->dev);
-	u8 disable[4] = { 0, 0, 0, 0 };
 	u16 value, index;
 	int x, y;
 
 	if (!new_state->fb || !new_state->crtc) {
-		trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
-					disable, sizeof(disable));
+		if (trigger5->cursor_enabled)
+			trigger5_cursor_set_enabled(trigger5, false);
 		return;
 	}
+
+	if (!trigger5->cursor_enabled)
+		trigger5_cursor_set_enabled(trigger5, true);
 
 	x = new_state->dst.x1;
 	y = new_state->dst.y1;
@@ -932,12 +947,7 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                goto err;
 
        /* Enable the fixed hardware cursor (register 0xE868 = 1). */
-       data[0] = 1;
-       data[1] = 0;
-       data[2] = 0;
-       data[3] = 0;
-       trigger5_cursor_control(trigger5, 0, TRIGGER5_CURSOR_ENABLE_REG,
-                               data, sizeof(data));
+       trigger5_cursor_set_enabled(trigger5, true);
 
        /*
         * A successful re-initialisation clears any latched transfer error
@@ -976,13 +986,7 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
        if (ret)
                drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
 
-       {
-               u8 off[4] = { 0, 0, 0, 0 };
-
-               trigger5_cursor_control(trigger5, 0,
-                                       TRIGGER5_CURSOR_ENABLE_REG, off,
-                                       sizeof(off));
-       }
+       trigger5_cursor_set_enabled(trigger5, false);
 
        drm_dev_exit(idx);
 }
