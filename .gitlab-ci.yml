@@ -40,6 +40,15 @@ build:debian-6.12:
   script:
     - ci/build-module.sh "$CI_PROJECT_DIR"
 
+build:tools:
+  stage: build
+  image: debian:trixie
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential pkg-config libdrm-dev libusb-1.0-0-dev >/dev/null
+  script:
+    - make -C linux-trigger5/tools
+
 build:ubuntu-7.0:
   stage: build
   image: ubuntu:26.04

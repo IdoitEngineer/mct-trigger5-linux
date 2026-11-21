@@ -7,6 +7,9 @@
 *.order
 .*.cmd
 
+# Userspace tool build output
+linux-trigger5/tools/trigger5-tool
+
 # DKMS/debhelper build state
 linux-trigger5/debian/.debhelper/
 linux-trigger5/debian/files

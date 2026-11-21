@@ -19,6 +19,7 @@ the vendor binaries are proprietary and not covered — see
 | Path | What it is |
 |---|---|
 | `linux-trigger5/` | The Trigger 5 DRM driver (`trigger5.c`), DKMS packaging, install/uninstall scripts, Debian packaging and driver notes. See [`linux-trigger5/README.md`](linux-trigger5/README.md). |
+| `linux-trigger5/tools/` | `trigger5-tool`: read-only USB/DRM probe plus a KMS test pattern, rotation and hardware-cursor exerciser. See [`linux-trigger5/tools/README.md`](linux-trigger5/tools/README.md). |
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
 | `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
@@ -395,6 +396,43 @@ echo 0 | sudo tee /sys/module/trigger5/parameters/full_frame_period_ms  # off
 
 `full_frame_always` and `full_frame_period_ms` are runtime module parameters
 (`/sys/module/trigger5/parameters/`), so no rebuild is needed to change them.
+
+---
+
+## Userspace test tool
+
+`linux-trigger5/tools/trigger5-tool` probes the adapter and exercises the
+display and cursor paths through DRM/KMS, bypassing X and the compositor.
+
+Build it with:
+
+```sh
+sudo apt install build-essential pkg-config libdrm-dev libusb-1.0-0-dev
+make -C linux-trigger5/tools
+```
+
+Read-only probe (safe with X running):
+
+```sh
+linux-trigger5/tools/trigger5-tool probe
+linux-trigger5/tools/trigger5-tool probe --json
+```
+
+Display and cursor tests need DRM master, so run them from a text console or
+with the display manager stopped:
+
+```sh
+sudo trigger5-tool test --landscape        # rotate-0
+sudo trigger5-tool test --portrait-left    # rotate-90, 90° CCW
+sudo trigger5-tool test --portrait-right   # rotate-270, 90° CW
+sudo trigger5-tool cursor --seconds 8
+```
+
+`test` animates a test bitmap, draws a frame counter, moves the hardware
+cursor through the corners (including a negative top-left position), and
+restores the previous CRTC on exit. See
+[`linux-trigger5/tools/README.md`](linux-trigger5/tools/README.md) for all
+options and troubleshooting.
 
 ---
 

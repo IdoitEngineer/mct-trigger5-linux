@@ -102,6 +102,11 @@ The driver implements modesetting, EDID retrieval and USB framebuffer
 transfers. Upstream only the HDMI path has been tested; this dongle reports the
 VGA group (no USB audio interface), so the VGA path is the less-travelled one.
 
+`tools/` contains `trigger5-tool`, a userspace helper that probes USB and
+DRM/KMS details and displays a test bitmap in landscape or portrait (rotate
+left/right) while exercising the hardware cursor. See
+[`tools/README.md`](tools/README.md).
+
 ## Install
 
 ```sh
