@@ -49,6 +49,7 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper.h>
 #include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_modes.h>
 #include <drm/drm_plane.h>
 #include <drm/drm_print.h>
 #include <drm/drm_probe_helper.h>
@@ -199,6 +200,21 @@ static unsigned int full_frame_period_ms;
 module_param(full_frame_period_ms, uint, 0644);
 MODULE_PARM_DESC(full_frame_period_ms,
 		 "Force a complete frame when this many milliseconds have elapsed (0 = off)");
+
+/*
+ * Diagnostic override: use a mode-table index as SET_MODE wValue instead of
+ * the custom-mode value 0. -1 keeps the existing behaviour.
+ */
+static int set_mode_index = -1;
+static uint set_mode_width;
+static uint set_mode_height;
+module_param(set_mode_index, int, 0644);
+module_param(set_mode_width, uint, 0644);
+module_param(set_mode_height, uint, 0644);
+MODULE_PARM_DESC(set_mode_index,
+		 "Force SET_MODE wValue for the configured width/height; -1 uses 0");
+MODULE_PARM_DESC(set_mode_width, "Width for set_mode_index");
+MODULE_PARM_DESC(set_mode_height, "Height for set_mode_index");
 
 #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
 
@@ -787,15 +803,16 @@ static int trigger5_cursor_set_enabled(struct trigger5_device *trigger5,
 				      value, sizeof(value));
 
 	/*
-	 * Only latch a successful enable so the next cursor update retries it.
-	 * A failed disable still marks the cursor as off: the firmware resets it
-	 * when the display is reconfigured, and retrying would just stall again.
+	 * The adapter STALLs this request, and the vendor Windows driver does
+	 * the same: it sends the write once, ignores the failure, and keeps
+	 * sending positions.  Latch the attempted state so we do not retry on
+	 * every cursor move, and never block positions on this return value.
 	 */
-	if (!ret || !enable)
-		trigger5->cursor_enabled = enable;
 	if (ret && enable)
-		drm_warn_once(&trigger5->drm,
-			      "cursor enable failed: %d\n", ret);
+		drm_info_once(&trigger5->drm,
+			      "cursor enable returned %d; continuing with positions\n",
+			      ret);
+	trigger5->cursor_enabled = enable;
 
 	return ret;
 }
@@ -810,11 +827,8 @@ static void trigger5_cursor_apply(struct trigger5_device *trigger5,
 	if (!state || !state->fb || !state->crtc)
 		return;
 
-	if (!trigger5->cursor_enabled) {
-		ret = trigger5_cursor_set_enabled(trigger5, true);
-		if (ret)
-			return;
-	}
+	if (!trigger5->cursor_enabled)
+		trigger5_cursor_set_enabled(trigger5, true);
 
 	x = state->dst.x1;
 	y = state->dst.y1;
@@ -827,6 +841,9 @@ static void trigger5_cursor_apply(struct trigger5_device *trigger5,
 	if (ret)
 		drm_warn_once(&trigger5->drm,
 			      "cursor position failed: %d\n", ret);
+	else
+		drm_info_once(&trigger5->drm,
+			      "cursor position request accepted\n");
 }
 
 static void trigger5_cursor_atomic_update(struct drm_plane *plane,
@@ -905,12 +922,17 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        struct trigger5_mode_request request = {};
        u8 data[4];
        u64 clk;
+       u16 mode_value;
        int idx, ret;
 
        if (!drm_dev_enter(crtc->dev, &idx))
                return;
 
+       drm_info(&trigger5->drm, "enabling %dx%d@%d\n", mode->hdisplay,
+                mode->vdisplay, drm_mode_vrefresh(mode));
+
        trigger5_stop_io(trigger5);
+       drm_info(&trigger5->drm, "mode step: stream stopped\n");
 
        /* Sequence recovered from USB captures. */
        ret = usb_control_msg_recv(udev, 0,
@@ -919,8 +941,11 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                           USB_RECIP_DEVICE,
                                   0x0000, 0x0000, data, 1,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
-       if (ret)
+       if (ret) {
+               drm_err(&trigger5->drm, "mode step: reset0 failed: %d\n", ret);
                goto err;
+       }
+       drm_info(&trigger5->drm, "mode step: reset0 ok\n");
 
        request.height = cpu_to_be16(mode->vdisplay);
        request.height_minus_one = cpu_to_be16(mode->vdisplay - 1);
@@ -956,13 +981,23 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                request.pll.div1, request.pll.div2, clk, mode->clock);
 
        /* wValue can be any value since we are sending a custom mode */
+       mode_value = 0;
+       if (set_mode_index >= 0 &&
+           mode->hdisplay == set_mode_width &&
+           mode->vdisplay == set_mode_height)
+               mode_value = (u16)set_mode_index;
+       drm_info(&trigger5->drm, "mode request wValue=%u: %*ph\n",
+                mode_value, (int)sizeof(request), &request);
        ret = usb_control_msg_send(udev, 0, TRIGGER5_REQUEST_SET_MODE,
                                   USB_DIR_OUT | USB_TYPE_VENDOR |
                                           USB_RECIP_DEVICE,
-                                  0, 0, &request, sizeof(request),
+                                  mode_value, 0, &request, sizeof(request),
                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
-       if (ret)
+       if (ret) {
+               drm_err(&trigger5->drm, "mode step: set_mode failed: %d\n", ret);
                goto err;
+       }
+       drm_info(&trigger5->drm, "mode step: set_mode ok\n");
 
        ret = usb_control_msg_recv(udev, 0,
                                   TRIGGER5_REQUEST_FIRMWARE_RESET,
@@ -970,8 +1005,11 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                           USB_RECIP_DEVICE,
                                   0x0201, 0x0000, data, 1,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
-       if (ret)
+       if (ret) {
+               drm_err(&trigger5->drm, "mode step: reset201 failed: %d\n", ret);
                goto err;
+       }
+       drm_info(&trigger5->drm, "mode step: reset201 ok\n");
 
        ret = usb_control_msg_recv(udev, 0,
                                   TRIGGER5_REQUEST_GET_REGISTER,
@@ -979,8 +1017,11 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                           USB_RECIP_DEVICE,
                                   0x0000, 0xec34, data, sizeof(data),
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
-       if (ret)
+       if (ret) {
+               drm_err(&trigger5->drm, "mode step: get_reg failed: %d\n", ret);
                goto err;
+       }
+       drm_info(&trigger5->drm, "mode step: get_reg ok\n");
 
        data[0] = 0x60;
        data[1] = 0x00;
@@ -992,8 +1033,11 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                           USB_RECIP_DEVICE,
                                   0x0000, 0xec34, data, sizeof(data),
                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
-       if (ret)
+       if (ret) {
+               drm_err(&trigger5->drm, "mode step: set_reg failed: %d\n", ret);
                goto err;
+       }
+       drm_info(&trigger5->drm, "mode step: set_reg ok\n");
 
        /*
         * A successful re-initialisation clears any latched transfer error
@@ -1002,6 +1046,14 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        atomic_set(&trigger5->needs_reset, 0);
        trigger5->full_frame = true;
        trigger5->display_on = true;
+
+       /*
+        * Match the Windows driver: send the (STALLing) enable once after the
+        * mode set and before the first frame, then keep sending positions.
+        */
+       trigger5->cursor_enabled = false;
+       ret = trigger5_cursor_set_enabled(trigger5, true);
+       drm_info(&trigger5->drm, "cursor enable at mode set: %d\n", ret);
 
        /* The cursor plane update ran before this point; apply it now. */
        trigger5_cursor_apply(trigger5,
@@ -1028,7 +1080,9 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
        if (!drm_dev_enter(crtc->dev, &idx))
                return;
 
+       drm_info(&trigger5->drm, "disabling display\n");
        trigger5_stop_io(trigger5);
+       drm_info(&trigger5->drm, "display step: stream stopped\n");
 
        ret = usb_control_msg_recv(udev, 0,
                                   TRIGGER5_REQUEST_FIRMWARE_RESET,
@@ -1037,7 +1091,9 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
                                   0x0001, 0x0000, &data, 1,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        if (ret)
-               drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
+               drm_err(&trigger5->drm, "display step: disable failed: %d\n", ret);
+       else
+               drm_info(&trigger5->drm, "display step: disable ok\n");
 
        trigger5->display_on = false;
 

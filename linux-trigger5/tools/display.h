@@ -25,6 +25,9 @@ struct display {
 	int crtc_id_index;
 	uint32_t plane_id;
 	uint32_t cursor_plane_id;
+	uint32_t saved_rotation;
+	uint32_t saved_fb_w;
+	uint32_t saved_fb_h;
 	drmModeModeInfo mode;
 };
 
