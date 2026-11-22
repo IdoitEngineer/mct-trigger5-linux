@@ -122,6 +122,7 @@ int display_open(struct display *d, bool need_master)
 {
 	drmModeEncoder *enc = NULL;
 	drmVersion *version;
+	uint64_t rotation = DRM_MODE_ROTATE_0;
 	unsigned int i;
 	int card;
 
@@ -251,6 +252,22 @@ int display_open(struct display *d, bool need_master)
 
 	d->mode = d->conn->modes[0];
 	d->saved_crtc = drmModeGetCrtc(d->fd, d->crtc_id);
+	d->saved_rotation = DRM_MODE_ROTATE_0;
+
+	if (!get_prop(d->fd, d->plane_id, DRM_MODE_OBJECT_PLANE, "rotation",
+		      NULL, &rotation))
+		d->saved_rotation = (uint32_t)rotation;
+
+	if (d->saved_crtc && d->saved_crtc->buffer_id) {
+		drmModeFB2 *fb2 = drmModeGetFB2(d->fd,
+						d->saved_crtc->buffer_id);
+
+		if (fb2) {
+			d->saved_fb_w = fb2->width;
+			d->saved_fb_h = fb2->height;
+			drmModeFreeFB2(fb2);
+		}
+	}
 
 	printf("connector %s-%u, CRTC %u, primary plane %u, cursor plane %u\n",
 	       drmModeGetConnectorTypeName(d->conn->connector_type),
@@ -286,29 +303,57 @@ void display_close(struct display *d)
 int display_parse_mode(struct display *d, const char *spec)
 {
 	unsigned int i;
-	int w, h;
+	int w, h, refresh = 0;
+	int fallback = -1;
 
-	if (sscanf(spec, "%dx%d", &w, &h) != 2 || w <= 0 || h <= 0) {
-		fprintf(stderr, "invalid mode '%s' (expected WxH)\n", spec);
+	if (sscanf(spec, "%dx%d@%d", &w, &h, &refresh) < 2 ||
+	    w <= 0 || h <= 0) {
+		fprintf(stderr,
+			"invalid mode '%s' (expected WxH or WxH@refresh)\n",
+			spec);
 		return -1;
 	}
 
 	for (i = 0; i < (unsigned int)d->conn->count_modes; i++) {
 		drmModeModeInfo *m = &d->conn->modes[i];
 
-		if (m->hdisplay == w && m->vdisplay == h) {
-			d->mode = *m;
-			printf("selected mode %s %dx%d@%d\n", m->name,
-			       m->hdisplay, m->vdisplay, m->vrefresh);
-			return 0;
+		if (m->hdisplay != w || m->vdisplay != h)
+			continue;
+
+		if (refresh) {
+			if ((int)m->vrefresh != refresh)
+				continue;
+		} else {
+			if (fallback < 0)
+				fallback = (int)i;
+			if (m->vrefresh != 60)
+				continue;
 		}
+
+		d->mode = *m;
+		printf("selected mode %s %dx%d@%d\n", m->name,
+		       m->hdisplay, m->vdisplay, m->vrefresh);
+		return 0;
 	}
 
-	fprintf(stderr, "mode %dx%d not in the connector list, using generic timings\n",
-		w, h);
+	if (!refresh && fallback >= 0) {
+		drmModeModeInfo *m = &d->conn->modes[fallback];
+
+		d->mode = *m;
+		printf("selected mode %s %dx%d@%d\n", m->name,
+		       m->hdisplay, m->vdisplay, m->vrefresh);
+		return 0;
+	}
+
+	fprintf(stderr,
+		"mode %dx%d%s not in the connector list, using generic timings\n",
+		w, h, refresh ? " at the requested refresh" : "");
 	fallback_mode(&d->mode, w, h);
+	if (refresh)
+		d->mode.vrefresh = refresh;
 	return 0;
 }
+
 
 void display_print(struct display *d)
 {
@@ -406,8 +451,10 @@ void dumb_fb_destroy(struct display *d, struct dumb_fb *fb)
 	memset(fb, 0, sizeof(*fb));
 }
 
-int display_set_mode(struct display *d, struct dumb_fb *fb,
-		     uint32_t drm_rotation)
+static int atomic_modeset(struct display *d, const drmModeModeInfo *mode,
+			  uint32_t fb_id, uint32_t fb_w, uint32_t fb_h,
+			  int src_x_off, int src_y_off,
+			  uint32_t drm_rotation, bool enable)
 {
 	drmModeAtomicReq *req = NULL;
 	uint32_t mode_id_prop, active_prop, conn_crtc_prop;
@@ -420,12 +467,6 @@ int display_set_mode(struct display *d, struct dumb_fb *fb,
 	req = drmModeAtomicAlloc();
 	if (!req)
 		return -1;
-
-	if (drmModeCreatePropertyBlob(d->fd, &d->mode, sizeof(d->mode),
-				      &blob_id)) {
-		fprintf(stderr, "create MODE_ID blob: %s\n", strerror(errno));
-		goto out;
-	}
 
 	mode_id_prop = prop_id(d->fd, d->crtc_id, DRM_MODE_OBJECT_CRTC,
 			       "MODE_ID");
@@ -448,50 +489,86 @@ int display_set_mode(struct display *d, struct dumb_fb *fb,
 	crtc_w = prop_id(d->fd, d->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_W");
 	crtc_h = prop_id(d->fd, d->plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_H");
 
-	if (!mode_id_prop || !conn_crtc_prop || !fb_id_prop ||
+	if (!mode_id_prop || !active_prop || !conn_crtc_prop || !fb_id_prop ||
 	    !plane_crtc_prop || !src_w || !src_h || !crtc_w || !crtc_h) {
 		fprintf(stderr,
-			"missing atomic properties (MODE_ID=%u connector CRTC_ID=%u FB_ID=%u plane CRTC_ID=%u SRC_W=%u SRC_H=%u CRTC_W=%u CRTC_H=%u)\n",
-			mode_id_prop, conn_crtc_prop, fb_id_prop, plane_crtc_prop,
-			src_w, src_h, crtc_w, crtc_h);
+			"missing atomic properties (MODE_ID=%u ACTIVE=%u connector CRTC_ID=%u FB_ID=%u plane CRTC_ID=%u SRC_W=%u SRC_H=%u CRTC_W=%u CRTC_H=%u)\n",
+			mode_id_prop, active_prop, conn_crtc_prop, fb_id_prop,
+			plane_crtc_prop, src_w, src_h, crtc_w, crtc_h);
 		goto out;
 	}
 
-	drmModeAtomicAddProperty(req, d->crtc_id, mode_id_prop, blob_id);
-	if (active_prop)
-		drmModeAtomicAddProperty(req, d->crtc_id, active_prop, 1);
-	drmModeAtomicAddProperty(req, d->conn_id, conn_crtc_prop, d->crtc_id);
+	if (enable) {
+		if (!mode || !fb_id) {
+			fprintf(stderr, "atomic modeset: missing mode or framebuffer\n");
+			goto out;
+		}
+		if (drmModeCreatePropertyBlob(d->fd, mode, sizeof(*mode),
+					      &blob_id)) {
+			fprintf(stderr, "create MODE_ID blob: %s\n",
+				strerror(errno));
+			goto out;
+		}
 
-	drmModeAtomicAddProperty(req, d->plane_id, fb_id_prop, fb->fb_id);
-	drmModeAtomicAddProperty(req, d->plane_id, plane_crtc_prop, d->crtc_id);
-	if (src_x)
-		drmModeAtomicAddProperty(req, d->plane_id, src_x, 0);
-	if (src_y)
-		drmModeAtomicAddProperty(req, d->plane_id, src_y, 0);
-	drmModeAtomicAddProperty(req, d->plane_id, src_w, fb->width << 16);
-	drmModeAtomicAddProperty(req, d->plane_id, src_h, fb->height << 16);
-	if (crtc_x)
-		drmModeAtomicAddProperty(req, d->plane_id, crtc_x, 0);
-	if (crtc_y)
-		drmModeAtomicAddProperty(req, d->plane_id, crtc_y, 0);
-	drmModeAtomicAddProperty(req, d->plane_id, crtc_w, d->mode.hdisplay);
-	drmModeAtomicAddProperty(req, d->plane_id, crtc_h, d->mode.vdisplay);
-	if (rotation_prop)
-		drmModeAtomicAddProperty(req, d->plane_id, rotation_prop,
-					 drm_rotation);
+		drmModeAtomicAddProperty(req, d->crtc_id, mode_id_prop,
+					 blob_id);
+		drmModeAtomicAddProperty(req, d->crtc_id, active_prop, 1);
+		drmModeAtomicAddProperty(req, d->conn_id, conn_crtc_prop,
+					 d->crtc_id);
+
+		drmModeAtomicAddProperty(req, d->plane_id, fb_id_prop, fb_id);
+		drmModeAtomicAddProperty(req, d->plane_id, plane_crtc_prop,
+					 d->crtc_id);
+		if (src_x)
+			drmModeAtomicAddProperty(req, d->plane_id, src_x,
+						 (uint32_t)src_x_off << 16);
+		if (src_y)
+			drmModeAtomicAddProperty(req, d->plane_id, src_y,
+						 (uint32_t)src_y_off << 16);
+		drmModeAtomicAddProperty(req, d->plane_id, src_w, fb_w << 16);
+		drmModeAtomicAddProperty(req, d->plane_id, src_h, fb_h << 16);
+		if (crtc_x)
+			drmModeAtomicAddProperty(req, d->plane_id, crtc_x, 0);
+		if (crtc_y)
+			drmModeAtomicAddProperty(req, d->plane_id, crtc_y, 0);
+		drmModeAtomicAddProperty(req, d->plane_id, crtc_w,
+					 mode->hdisplay);
+		drmModeAtomicAddProperty(req, d->plane_id, crtc_h,
+					 mode->vdisplay);
+		if (rotation_prop)
+			drmModeAtomicAddProperty(req, d->plane_id, rotation_prop,
+						 drm_rotation);
+	} else {
+		drmModeAtomicAddProperty(req, d->crtc_id, mode_id_prop, 0);
+		drmModeAtomicAddProperty(req, d->crtc_id, active_prop, 0);
+		drmModeAtomicAddProperty(req, d->conn_id, conn_crtc_prop, 0);
+		drmModeAtomicAddProperty(req, d->plane_id, fb_id_prop, 0);
+		drmModeAtomicAddProperty(req, d->plane_id, plane_crtc_prop, 0);
+	}
 
 	if (drmModeAtomicCommit(d->fd, req, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL)) {
 		fprintf(stderr, "atomic modeset: %s\n", strerror(errno));
 		goto out;
 	}
 
-	d->mode_set = true;
 	ret = 0;
 
 out:
 	if (blob_id)
 		drmModeDestroyPropertyBlob(d->fd, blob_id);
 	drmModeAtomicFree(req);
+	return ret;
+}
+
+int display_set_mode(struct display *d, struct dumb_fb *fb,
+		     uint32_t drm_rotation)
+{
+	int ret;
+
+	ret = atomic_modeset(d, &d->mode, fb->fb_id, fb->width, fb->height,
+			     0, 0, drm_rotation, true);
+	if (!ret)
+		d->mode_set = true;
 	return ret;
 }
 
@@ -555,22 +632,34 @@ int display_restore(struct display *d)
 
 	display_cursor_hide(d);
 
-	if (d->mode_set && d->saved_crtc) {
-		if (d->saved_crtc->mode_valid &&
-		    d->saved_crtc->buffer_id) {
-			ret = drmModeSetCrtc(d->fd, d->saved_crtc->crtc_id,
-					     d->saved_crtc->buffer_id,
-					     d->saved_crtc->x,
-					     d->saved_crtc->y, &d->conn_id, 1,
-					     &d->saved_crtc->mode);
-		} else {
-			ret = drmModeSetCrtc(d->fd, d->saved_crtc->crtc_id, 0,
-					     0, 0, NULL, 0, NULL);
-		}
-		if (ret)
-			fprintf(stderr, "restore CRTC: %s\n", strerror(errno));
+	if (!d->mode_set) {
+		d->mode_set = false;
+		return 0;
 	}
+
+	if (d->saved_crtc && d->saved_crtc->mode_valid &&
+	    d->saved_crtc->buffer_id) {
+		uint32_t fw = d->saved_fb_w;
+		uint32_t fh = d->saved_fb_h;
+
+		if (!fw || !fh) {
+			fw = d->saved_crtc->mode.hdisplay;
+			fh = d->saved_crtc->mode.vdisplay;
+		}
+
+		ret = atomic_modeset(d, &d->saved_crtc->mode,
+				     d->saved_crtc->buffer_id, fw, fh,
+				     d->saved_crtc->x, d->saved_crtc->y,
+				     d->saved_rotation, true);
+	} else {
+		ret = atomic_modeset(d, NULL, 0, 0, 0, 0, 0,
+				     DRM_MODE_ROTATE_0, false);
+	}
+
+	if (ret)
+		fprintf(stderr, "restore: could not restore the original CRTC state\n");
 
 	d->mode_set = false;
 	return ret;
 }
+

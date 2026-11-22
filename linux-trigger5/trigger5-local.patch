@@ -22,7 +22,13 @@
  #include <drm/drm_connector.h>
  #include <drm/drm_crtc.h>
  #include <drm/drm_crtc_helper.h>
-@@ -44,6 +54,17 @@
+@@ -39,11 +49,23 @@
+ #include <drm/drm_managed.h>
+ #include <drm/drm_modeset_helper.h>
+ #include <drm/drm_modeset_helper_vtables.h>
++#include <drm/drm_modes.h>
+ #include <drm/drm_plane.h>
+ #include <drm/drm_print.h>
  #include <drm/drm_probe_helper.h>
  #include <drm/drm_rect.h>
  
@@ -40,7 +46,7 @@
  #define DRIVER_NAME            "trigger5"
  #define DRIVER_DESC            "MCT Trigger 5 USB display adapter"
  
-@@ -67,11 +88,33 @@
+@@ -67,11 +89,33 @@
  
         struct drm_connector connector;
         struct drm_plane plane;
@@ -74,7 +80,7 @@
         int next_transfer;
         struct trigger5_transfer transfers[TRIGGER5_NUM_URBS];
  
-@@ -129,10 +172,34 @@
+@@ -129,10 +173,49 @@
  #define TRIGGER5_REQUEST_SET_MODE              0xC3
  #define TRIGGER5_REQUEST_SET_REGISTER          0xC4
  #define TRIGGER5_REQUEST_SET_CURSOR_POSITION   0xC8
@@ -106,10 +112,25 @@
 +MODULE_PARM_DESC(full_frame_period_ms,
 +		 "Force a complete frame when this many milliseconds have elapsed (0 = off)");
 +
++/*
++ * Diagnostic override: use a mode-table index as SET_MODE wValue instead of
++ * the custom-mode value 0. -1 keeps the existing behaviour.
++ */
++static int set_mode_index = -1;
++static uint set_mode_width;
++static uint set_mode_height;
++module_param(set_mode_index, int, 0644);
++module_param(set_mode_width, uint, 0644);
++module_param(set_mode_height, uint, 0644);
++MODULE_PARM_DESC(set_mode_index,
++		 "Force SET_MODE wValue for the configured width/height; -1 uses 0");
++MODULE_PARM_DESC(set_mode_width, "Width for set_mode_index");
++MODULE_PARM_DESC(set_mode_height, "Height for set_mode_index");
++
  #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
  
  static void trigger5_stop_io(struct trigger5_device *trigger5)
-@@ -173,7 +240,9 @@
+@@ -173,7 +256,9 @@
         /* GEM hooks */
         .fops = &trigger5_driver_fops,
         DRM_GEM_SHMEM_DRIVER_OPS,
@@ -119,7 +140,7 @@
  
         .name = DRIVER_NAME,
         .desc = DRIVER_DESC,
-@@ -230,13 +299,20 @@
+@@ -230,13 +315,20 @@
         return best_err;
  }
  
@@ -144,7 +165,7 @@
  }
  
  static void trigger5_urb_complete(struct urb *urb)
-@@ -345,7 +421,7 @@
+@@ -345,7 +437,7 @@
  }
  
  static int trigger5_plane_atomic_check(struct drm_plane *plane,
@@ -153,7 +174,7 @@
  {
         struct drm_plane_state *new_plane_state =
                 drm_atomic_get_new_plane_state(state, plane);
-@@ -390,96 +466,278 @@
+@@ -390,96 +482,278 @@
  }
  
  static void trigger5_plane_atomic_update(struct drm_plane *plane,
@@ -518,7 +539,7 @@
  }
  
  static const struct drm_plane_helper_funcs trigger5_plane_helper_funcs = {
-@@ -499,8 +757,145 @@
+@@ -499,8 +773,146 @@
         DRM_FORMAT_XRGB8888,
  };
  
@@ -552,15 +573,16 @@
 +				      value, sizeof(value));
 +
 +	/*
-+	 * Only latch a successful enable so the next cursor update retries it.
-+	 * A failed disable still marks the cursor as off: the firmware resets it
-+	 * when the display is reconfigured, and retrying would just stall again.
++	 * The adapter STALLs this request, and the vendor Windows driver does
++	 * the same: it sends the write once, ignores the failure, and keeps
++	 * sending positions.  Latch the attempted state so we do not retry on
++	 * every cursor move, and never block positions on this return value.
 +	 */
-+	if (!ret || !enable)
-+		trigger5->cursor_enabled = enable;
 +	if (ret && enable)
-+		drm_warn_once(&trigger5->drm,
-+			      "cursor enable failed: %d\n", ret);
++		drm_info_once(&trigger5->drm,
++			      "cursor enable returned %d; continuing with positions\n",
++			      ret);
++	trigger5->cursor_enabled = enable;
 +
 +	return ret;
 +}
@@ -575,11 +597,8 @@
 +	if (!state || !state->fb || !state->crtc)
 +		return;
 +
-+	if (!trigger5->cursor_enabled) {
-+		ret = trigger5_cursor_set_enabled(trigger5, true);
-+		if (ret)
-+			return;
-+	}
++	if (!trigger5->cursor_enabled)
++		trigger5_cursor_set_enabled(trigger5, true);
 +
 +	x = state->dst.x1;
 +	y = state->dst.y1;
@@ -592,6 +611,9 @@
 +	if (ret)
 +		drm_warn_once(&trigger5->drm,
 +			      "cursor position failed: %d\n", ret);
++	else
++		drm_info_once(&trigger5->drm,
++			      "cursor position request accepted\n");
 +}
 +
 +static void trigger5_cursor_atomic_update(struct drm_plane *plane,
@@ -665,10 +687,100 @@
  {
         struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
         struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-@@ -600,16 +995,30 @@
-        if (ret)
-                goto err;
+@@ -510,12 +922,17 @@
+        struct trigger5_mode_request request = {};
+        u8 data[4];
+        u64 clk;
++       u16 mode_value;
+        int idx, ret;
  
+        if (!drm_dev_enter(crtc->dev, &idx))
+                return;
+ 
++       drm_info(&trigger5->drm, "enabling %dx%d@%d\n", mode->hdisplay,
++                mode->vdisplay, drm_mode_vrefresh(mode));
++
+        trigger5_stop_io(trigger5);
++       drm_info(&trigger5->drm, "mode step: stream stopped\n");
+ 
+        /* Sequence recovered from USB captures. */
+        ret = usb_control_msg_recv(udev, 0,
+@@ -524,8 +941,11 @@
+                                           USB_RECIP_DEVICE,
+                                   0x0000, 0x0000, data, 1,
+                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+-       if (ret)
++       if (ret) {
++               drm_err(&trigger5->drm, "mode step: reset0 failed: %d\n", ret);
+                goto err;
++       }
++       drm_info(&trigger5->drm, "mode step: reset0 ok\n");
+ 
+        request.height = cpu_to_be16(mode->vdisplay);
+        request.height_minus_one = cpu_to_be16(mode->vdisplay - 1);
+@@ -561,13 +981,23 @@
+                request.pll.div1, request.pll.div2, clk, mode->clock);
+ 
+        /* wValue can be any value since we are sending a custom mode */
++       mode_value = 0;
++       if (set_mode_index >= 0 &&
++           mode->hdisplay == set_mode_width &&
++           mode->vdisplay == set_mode_height)
++               mode_value = (u16)set_mode_index;
++       drm_info(&trigger5->drm, "mode request wValue=%u: %*ph\n",
++                mode_value, (int)sizeof(request), &request);
+        ret = usb_control_msg_send(udev, 0, TRIGGER5_REQUEST_SET_MODE,
+                                   USB_DIR_OUT | USB_TYPE_VENDOR |
+                                           USB_RECIP_DEVICE,
+-                                  0, 0, &request, sizeof(request),
++                                  mode_value, 0, &request, sizeof(request),
+                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
+-       if (ret)
++       if (ret) {
++               drm_err(&trigger5->drm, "mode step: set_mode failed: %d\n", ret);
+                goto err;
++       }
++       drm_info(&trigger5->drm, "mode step: set_mode ok\n");
+ 
+        ret = usb_control_msg_recv(udev, 0,
+                                   TRIGGER5_REQUEST_FIRMWARE_RESET,
+@@ -575,8 +1005,11 @@
+                                           USB_RECIP_DEVICE,
+                                   0x0201, 0x0000, data, 1,
+                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+-       if (ret)
++       if (ret) {
++               drm_err(&trigger5->drm, "mode step: reset201 failed: %d\n", ret);
+                goto err;
++       }
++       drm_info(&trigger5->drm, "mode step: reset201 ok\n");
+ 
+        ret = usb_control_msg_recv(udev, 0,
+                                   TRIGGER5_REQUEST_GET_REGISTER,
+@@ -584,8 +1017,11 @@
+                                           USB_RECIP_DEVICE,
+                                   0x0000, 0xec34, data, sizeof(data),
+                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+-       if (ret)
++       if (ret) {
++               drm_err(&trigger5->drm, "mode step: get_reg failed: %d\n", ret);
+                goto err;
++       }
++       drm_info(&trigger5->drm, "mode step: get_reg ok\n");
+ 
+        data[0] = 0x60;
+        data[1] = 0x00;
+@@ -597,19 +1033,44 @@
+                                           USB_RECIP_DEVICE,
+                                   0x0000, 0xec34, data, sizeof(data),
+                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
+-       if (ret)
++       if (ret) {
++               drm_err(&trigger5->drm, "mode step: set_reg failed: %d\n", ret);
+                goto err;
++       }
++       drm_info(&trigger5->drm, "mode step: set_reg ok\n");
++
 +       /*
 +        * A successful re-initialisation clears any latched transfer error
 +        * and makes the next plane update send a complete frame.
@@ -677,11 +789,19 @@
 +       trigger5->full_frame = true;
 +       trigger5->display_on = true;
 +
++       /*
++        * Match the Windows driver: send the (STALLing) enable once after the
++        * mode set and before the first frame, then keep sending positions.
++        */
++       trigger5->cursor_enabled = false;
++       ret = trigger5_cursor_set_enabled(trigger5, true);
++       drm_info(&trigger5->drm, "cursor enable at mode set: %d\n", ret);
++
 +       /* The cursor plane update ran before this point; apply it now. */
 +       trigger5_cursor_apply(trigger5,
 +                             drm_atomic_get_new_plane_state(state,
 +                                                            &trigger5->cursor));
-+
+ 
         goto exit;
  
  err:
@@ -697,10 +817,25 @@
  {
         struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
         struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-@@ -630,6 +1039,18 @@
-        if (ret)
-                drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
+@@ -619,7 +1080,9 @@
+        if (!drm_dev_enter(crtc->dev, &idx))
+                return;
  
++       drm_info(&trigger5->drm, "disabling display\n");
+        trigger5_stop_io(trigger5);
++       drm_info(&trigger5->drm, "display step: stream stopped\n");
+ 
+        ret = usb_control_msg_recv(udev, 0,
+                                   TRIGGER5_REQUEST_FIRMWARE_RESET,
+@@ -628,7 +1091,21 @@
+                                   0x0001, 0x0000, &data, 1,
+                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+        if (ret)
+-               drm_err_once(&trigger5->drm, "failed to disable display: %d\n", ret);
++               drm_err(&trigger5->drm, "display step: disable failed: %d\n", ret);
++       else
++               drm_info(&trigger5->drm, "display step: disable ok\n");
++
 +       trigger5->display_on = false;
 +
 +       /*
@@ -712,11 +847,10 @@
 +               trigger5_cursor_set_enabled(trigger5, false);
 +       else
 +               trigger5->cursor_enabled = false;
-+
+ 
         drm_dev_exit(idx);
  }
- 
-@@ -672,7 +1093,9 @@
+@@ -672,7 +1149,9 @@
  };
  
  static const struct drm_crtc_funcs trigger5_crtc_funcs = {
@@ -726,7 +860,7 @@
         .destroy = drm_crtc_cleanup,
         .set_config = drm_atomic_helper_set_config,
         .page_flip = drm_atomic_helper_page_flip,
-@@ -708,18 +1131,33 @@
+@@ -708,18 +1187,33 @@
         return 0;
  }
  
@@ -767,7 +901,7 @@
  }
  
  static enum drm_connector_status
-@@ -755,7 +1193,9 @@
+@@ -755,7 +1249,9 @@
         .fill_modes = drm_helper_probe_single_connector_modes,
         .destroy = drm_connector_cleanup,
         .detect = trigger5_detect,
@@ -777,7 +911,7 @@
         .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
         .atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
  };
-@@ -774,14 +1214,26 @@
+@@ -774,14 +1270,26 @@
         return ret;
  }
  
@@ -804,7 +938,7 @@
         struct usb_device *udev = interface_to_usbdev(interface);
         /* Heuristic: Presence of audio interfaces indicates HDMI. */
         bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
-@@ -807,6 +1259,11 @@
+@@ -807,6 +1315,11 @@
  
         dev = &trigger5->drm;
  
@@ -816,7 +950,7 @@
         dma_dev = usb_intf_get_dma_device(interface);
         if (dma_dev) {
                 drm_dev_set_dma_dev(dev, dma_dev);
-@@ -815,6 +1272,7 @@
+@@ -815,6 +1328,7 @@
                 drm_warn(dev,
                          "buffer sharing not supported"); /* not an error */
         }
@@ -824,7 +958,7 @@
  
         ret = drmm_mode_config_init(dev);
         if (ret)
-@@ -828,6 +1286,8 @@
+@@ -828,6 +1342,8 @@
         dev->mode_config.max_width = 8191;
         dev->mode_config.min_height = 1;
         dev->mode_config.max_height = 8191;
@@ -833,7 +967,7 @@
  
         dev->mode_config.funcs = &trigger5_mode_config_funcs;
         dev->mode_config.helper_private = &trigger5_mode_config_helper_funcs;
-@@ -843,8 +1303,35 @@
+@@ -843,8 +1359,35 @@
         drm_plane_helper_add(&trigger5->plane, &trigger5_plane_helper_funcs);
         drm_plane_enable_fb_damage_clips(&trigger5->plane);
  
@@ -870,7 +1004,7 @@
         if (ret)
                 return ret;
  
-@@ -856,6 +1343,18 @@
+@@ -856,6 +1399,18 @@
         if (ret)
                 return ret;
  
@@ -889,7 +1023,7 @@
         ret = drm_encoder_init(dev, &trigger5->encoder, &trigger5_encoder_funcs,
                                is_hdmi ? DRM_MODE_ENCODER_TMDS :
                                          DRM_MODE_ENCODER_DAC, NULL);
-@@ -882,7 +1381,15 @@
+@@ -882,7 +1437,15 @@
         if (ret)
                 goto err_poll_fini;
  
