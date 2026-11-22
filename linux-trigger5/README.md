@@ -39,13 +39,14 @@ driver.
    `needs_reset` flag is cleared after a successful mode re-initialisation.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
    rotated output is converted in the driver and sent as full frames.
-5. **DRM cursor plane + hardware cursor.** A 64×64 ARGB8888 cursor plane is
-   exposed and positions are sent with vendor request `0xC8` (enable register
-   `0xE868 = 1` after mode set). This keeps X from drawing a software cursor
-   into the shared PRIME framebuffer and fixes the duplicate cursor on NVIDIA
-   outputs. The device’s cursor image is fixed (arrow); shapes are not
-   uploaded. Cursor requests are only sent while the display is configured,
-   and a failed enable is retried on the next update.
+5. **DRM cursor plane + cursor protocol work.** A 64×64 ARGB8888 cursor
+   plane is exposed and `0xC8` enable/position writes are sent (enable register
+   `0xE868`). Windows evidence shows the visible cursor is a 64×64 ARGB bitmap
+   uploaded in a **bulk type-2 packet**, followed by type-2 show/move/hide
+   packets; `0xC8` alone is not sufficient. The Linux driver currently sends
+   only `0xC8`, so no cursor is visible yet. Cursor requests are only sent
+   while the display is configured, and a failed enable is latched rather than
+   retried on every move.
 6. **No automatic USB reset after a transfer error.** Resetting the adapter
    could take down the whole xHCI controller, so the driver now latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.

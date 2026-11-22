@@ -35,7 +35,7 @@ or `0xC0` (device→host, vendor, device).
 | `SET_MODE` | `0xC3` | OUT | `0x0000` | `0x0000` | 35 | program timing + PLL (struct below) |
 | `SET_REGISTER` | `0xC4` | OUT | `0x0000` | `0xEC34` | 4 | write register block |
 | `SET_CURSOR_POSITION` | `0xC8` | OUT | X / `0` | Y / `0xE868` | 0 / 4 | move the hardware cursor, or write the cursor register |
-| `FIRMWARE_RESET` | `0xD1` | IN | `0x0000` / `0x0001` / `0x0201` | `0x0000` | 1 | re-initialise / disable on-device firmware |
+| `FIRMWARE_RESET` | `0xD1` | IN | `0x0000` / `0x0201` | `0x0000` | 1 | re-initialise on-device firmware |
 
 ### Mode-set sequence
 
@@ -49,7 +49,10 @@ GET_REGISTER(0xEC34)           -> 4 bytes
 SET_REGISTER(0xEC34) = 60 00 00 10
 ```
 
-Disable uses `FIRMWARE_RESET(0x0001)`.
+Disable: **do not use `FIRMWARE_RESET(0x0001)`.** That value is not present in
+the Windows driver; the adapter returns `-121`/`-110` and stops responding to
+the following mode set. Stop the bulk stream and let the next enable sequence
+(`0x0000`, `SET_MODE`, `0x0201`) program the new mode.
 
 ### `SET_MODE` payload (35 bytes, packed, big-endian)
 
@@ -86,10 +89,15 @@ pixel_clock = 10 MHz * mul1 * mul2 / (prediv * div1 * div2)
 The driver searches that space for the closest match and rejects modes whose
 error exceeds 10 000 ppm (1 %).
 
-### Cursor (0xC8)
+### Cursor
 
-The adapter has a **fixed hardware cursor image**; no cursor-bitmap upload was
-observed from the Windows driver or in the Linux path.
+The visible Windows cursor is a **64×64 ARGB bitmap uploaded over bulk OUT**,
+not a fixed hardware image. The `0xC8` control requests are a secondary path;
+the bitmap/show/hide packets are what make the cursor appear. See
+[`CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md) for
+the captured packet format, commands and the extracted bitmap.
+
+Control path, used by both Windows and the Linux driver:
 
 Enable, once after the mode set:
 
@@ -100,6 +108,9 @@ wIndex  0xE868
 wLength 4
 data    01 00 00 00
 ```
+
+The adapter may STALL this request. Windows ignores the failure and continues;
+the Linux driver latches the attempted state and sends positions anyway.
 
 Position, for every cursor move:
 
@@ -112,9 +123,18 @@ wLength 0
 
 `X` and `Y` are signed 16-bit values. The Windows driver adjusts negative
 coordinates by one (e.g. `x = -1` is sent as `0xFFFE`); the Linux driver does
-the same. Hiding the cursor is done with the `0xE868` register (`0`) or by
-moving it off-screen; the Windows capture only shows the negative-coordinate
-form.
+the same.
+
+Bulk cursor packets (counter type 2) carry the bitmap and the show/hide state:
+
+| Command | Payload | Meaning |
+|---|---|---|
+| `0x0` | 16384 bytes | Upload a 64×64 ARGB bitmap (BGRA little-endian, alpha). |
+| `0x3` | 0 | Show/move the cursor. |
+| `0x5` | 0 | Hide the cursor. |
+
+The type-2 counter is `0x2000 | sequence`. The command is the high nibble of
+the 32-bit field at offset 12; the low 28 bits are the payload length.
 
 ### Device descriptor (0xA1)
 
@@ -226,8 +246,27 @@ RGB888 data.
 - Rows per chunk: `128 KiB / (width * 3)`. At 1920 pixels wide that is 22 rows
   per URB.
 - Up to 8 URBs are kept in flight, round-robin. The driver waits for the
-  oldest to complete before reusing it; a 2 s timeout triggers a USB reset.
-- Transfers are completion-driven, not tied to the panel refresh.
+  oldest to complete before reusing it; a 2 s timeout latches `needs_reset`
+  and stops I/O. It does **not** issue a USB port reset.
+
+### Cursor packets (type 2)
+
+Cursor traffic reuses the 20-byte header with packet type `2` in the high
+nibble of the counter field (`0x2000 | sequence`) and a command in the high
+nibble of the 32-bit field at offset 12:
+
+| Offset | Field | Cursor meaning |
+|---|---|---|
+| 2 | counter | `0x2000 \| sequence` |
+| 4, 6 | field A/B | cursor coordinates or surface offset (observed) |
+| 8, 10 | width/height | `64`, `64` |
+| 12 | command/payload length | high nibble `0` = bitmap upload, `3` = show/move, `5` = hide; low 28 bits payload length |
+| 16 | flags | `0x01` |
+| 17 | extra | shape/format identifier (`0x10` arrow upload, `0x31` I-beam upload, `0x00`/`0x21` show) |
+| 20… | payload | 64×64 ARGB (16384 bytes) for command 0 |
+
+Full examples and the extracted bitmap are in
+[`CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md).
 
 ### Frame buffer model
 

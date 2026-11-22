@@ -21,6 +21,8 @@ the vendor binaries are proprietary and not covered — see
 | `linux-trigger5/` | The Trigger 5 DRM driver (`trigger5.c`), DKMS packaging, install/uninstall scripts, Debian packaging and driver notes. See [`linux-trigger5/README.md`](linux-trigger5/README.md). |
 | `linux-trigger5/tools/` | `trigger5-tool`: read-only USB/DRM probe plus a KMS test pattern, rotation and hardware-cursor exerciser. See [`linux-trigger5/tools/README.md`](linux-trigger5/tools/README.md). |
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
+| `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
+| `windows-RE-trigger/` | Local Ghidra reverse-engineering export of the vendor Windows driver pair (proprietary; not covered by the project licence). |
 | `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
@@ -341,29 +343,33 @@ driver never calls `request_firmware()`.
    `needs_reset` flag cleared after a successful mode re-init.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
    non-zero rotations are converted in the driver and sent as full frames.
-5. **DRM cursor plane + hardware cursor.** The driver exposes a 64×64
-   ARGB8888 cursor plane and uses the adapter's fixed hardware cursor.
-   X therefore does not draw a software cursor into the shared PRIME
-   framebuffer, which removed the duplicate/offset cursor seen on the NVIDIA
-   outputs. Positions are sent with vendor request `0xC8`; the cursor is
-   enabled by writing `0xE868 = 1` after the mode set. Cursor requests are
-   gated on the display being configured, and a failed enable is retried on
-   the next update.
+5. **DRM cursor plane + cursor protocol work.** The driver exposes a 64×64
+   ARGB8888 cursor plane and sends the `0xC8` enable/position writes. The
+   Windows capture shows that the visible cursor is actually a 64×64 ARGB
+   bitmap uploaded in a **bulk type-2 packet**, followed by type-2 show/hide
+   packets; `0xC8` alone does not display it. The Linux driver currently sends
+   only `0xC8`, so the cursor is not yet visible. See
+   `windows-RE-trigger/CURSOR-BULK-PACKETS.md`. Cursor requests are gated on
+   the display being configured, and a failed enable is latched rather than
+   retried on every move.
 6. **No automatic USB reset after a transfer error.** A USB port reset could
    take the whole xHCI controller down with it, so the driver latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.
 
 ### Cursor
 
-The adapter has a **fixed hardware cursor image** (an arrow); the Windows
-driver never uploads a cursor bitmap. X can move it and hide it, but the
-shape/theme will not follow the X cursor theme. Positions are signed 16-bit
-values; for negative coordinates the Windows driver sends `value - 1`, and
-the Linux driver does the same.
+The Windows driver uploads the cursor as a **64×64 ARGB bitmap in a bulk
+type-2 packet**, then sends type-2 show/move and hide packets. It also uses the
+`0xC8` control writes as a secondary cursor path; the enable may STALL, and
+Windows continues regardless.
+
+The Linux driver currently implements only the `0xC8` control path, so no
+cursor is drawn. The RE notes and extracted bitmap are in
+`windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 
 With native plane rotation (a compositor that sets the plane rotation
-property) the adapter’s cursor is still positioned by the driver; with X’s
-software rotation, X may or may not use the cursor plane, which is why
+property) the cursor is still positioned by the driver; with X’s software
+rotation, X may or may not use the cursor plane, which is why
 `full_frame_period_ms` remains useful if the cursor or damage tracking
 misbehaves.
 

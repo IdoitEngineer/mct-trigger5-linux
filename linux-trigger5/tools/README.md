@@ -103,10 +103,12 @@ at the top-left edge:
 sudo trigger5-tool cursor --seconds 8
 ```
 
-The adapter has a **fixed hardware cursor image** (an arrow); the tool's
-64×64 ARGB bitmap is used for hotspot/position testing only, and the panel
-will still show the adapter's arrow. With X's software rotation, X may or may
-not use the cursor plane; see the main README for `full_frame_period_ms`.
+The Windows driver uploads the cursor as a 64×64 ARGB bitmap in a bulk
+type-2 packet, followed by type-2 show/move/hide packets. The Linux driver
+currently sends only the `0xC8` control path, so the tool's 64×64 ARGB bitmap
+is not yet displayed; implementing the bulk cursor packet path is the next
+step. With X's software rotation, X may or may not use the cursor plane; see
+the main README for `full_frame_period_ms`.
 
 ## Troubleshooting
 
