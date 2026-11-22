@@ -39,7 +39,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - EDID is read once at probe and cached. Never re-read EDID while bulk transfers are active: the adapter returns corrupt data and the connector loses its mode list.
 - Rotation 90/180/270 is converted in the driver and sent as full frames. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; that is what `full_frame_period_ms` is for. Read the root README before changing damage/full-frame logic.
 - A USB transfer error latches `needs_reset` and stops I/O. Do **not** reintroduce `usb_queue_reset_device()`: it has taken down the whole xHCI controller. Recovery is replug or unbind/rebind.
-- Hardware cursor uses vendor request `0xC8`: enable register `0xE868`, position as `wValue=X`, `wIndex=Y` (negative coordinates are sent as `value - 1`). Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`.
+- Hardware cursor: the visible cursor is uploaded by the Windows driver as a **bulk type-2 packet** (64×64 ARGB, 16 KiB, then show/move/hide packets). The `0xC8` control writes (`0xE868` enable, `wValue=X`/`wIndex=Y` position, negative `value - 1`) are secondary. Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`; implement the bulk path before claiming cursor support. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 
 ## Hardware and runtime gotchas
 
@@ -53,7 +53,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Current branch traps (verify before trusting docs)
 
-- The adapter **STALLs the hardware-cursor enable** (`0xC8`, `wIndex=0xE868`, `-EPIPE`). The DRM cursor plane becomes active, but no hardware cursor appears, and the driver retries enable on every move. Check `dmesg | grep -i cursor` before assuming the cursor path works.
+- The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver currently sends only `0xC8`, so no cursor is visible. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 - `trigger5-tool --portrait-left/right` currently draws a **landscape** card into the portrait framebuffer, so the panel shows landscape content. The intended fix is to draw in framebuffer orientation and let plane rotation produce the rotated image.
 - Restoring after a rotated test can fail with `restore CRTC: No space left on device`: the primary plane rotation is not reset before the legacy restore, so the kernel's viewport check swaps the mode dimensions. Prefer an atomic restore that sets rotation and framebuffer together, and do not destroy the test FB if restore failed.
 
@@ -71,6 +71,8 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - `linux-trigger5/README.md` — driver notes and module parameters.
 - `linux-trigger5/tools/README.md` — tool options and troubleshooting.
 - `docs/usb-protocol.md` — request codes, mode-set payload, bulk header.
+- `docs/call-flow.md` — X11/tool → DRM → driver → USB → panel call and data flow.
+- `windows-RE-trigger/` — local Ghidra export of the vendor Windows driver (ignored; proprietary vendor-derived material).
 
 ## Agent skills
 
