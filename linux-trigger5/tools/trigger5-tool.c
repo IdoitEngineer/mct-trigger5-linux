@@ -82,7 +82,18 @@ struct test_options {
 	bool cursor;
 	bool full;
 	bool restore;
+	int damage_align;
 };
+
+static int align_down(int value, int align)
+{
+	return value & ~(align - 1);
+}
+
+static int align_up(int value, int align)
+{
+	return (value + align - 1) & ~(align - 1);
+}
 
 static void cursor_position(const struct test_options *opt, double elapsed,
 			    int screen_w, int screen_h, int *x, int *y)
@@ -248,16 +259,30 @@ static int run_test(struct test_options *opt)
 				clips[0].y2 = fb_h;
 				clip_count = 1;
 			} else {
+				int x1, x2, align = opt->damage_align;
+
+				if (align < 1)
+					align = 1;
+
 				if (old_bx >= 0) {
-					clips[clip_count].x1 = old_bx;
+					x1 = align_down(old_bx, align);
+					x2 = align_up(old_bx + block, align);
+					if (x2 > (int)fb_w)
+						x2 = fb_w;
+					clips[clip_count].x1 = x1;
 					clips[clip_count].y1 = old_by;
-					clips[clip_count].x2 = old_bx + block;
+					clips[clip_count].x2 = x2;
 					clips[clip_count].y2 = old_by + block;
 					clip_count++;
 				}
-				clips[clip_count].x1 = bx;
+
+				x1 = align_down(bx, align);
+				x2 = align_up(bx + block, align);
+				if (x2 > (int)fb_w)
+					x2 = fb_w;
+				clips[clip_count].x1 = x1;
 				clips[clip_count].y1 = by;
-				clips[clip_count].x2 = bx + block;
+				clips[clip_count].x2 = x2;
 				clips[clip_count].y2 = by + block;
 				clip_count++;
 
@@ -270,9 +295,13 @@ static int run_test(struct test_options *opt)
 				cw = canvas_text_width(scale, "FRAME 000000") + 24;
 				ch = canvas_text_height(scale) + 16;
 				cx = canvas.logical_w / 2 - cw / 2;
-				clips[clip_count].x1 = cx;
+				x1 = align_down(cx, align);
+				x2 = align_up(cx + cw, align);
+				if (x2 > (int)fb_w)
+					x2 = fb_w;
+				clips[clip_count].x1 = x1;
 				clips[clip_count].y1 = 20;
-				clips[clip_count].x2 = cx + cw;
+				clips[clip_count].x2 = x2;
 				clips[clip_count].y2 = 20 + ch;
 				clip_count++;
 			}
@@ -322,7 +351,7 @@ static void usage(const char *argv0)
 	       "  %s probe [--json]\n"
 	       "  %s test [--landscape | --portrait-left | --portrait-right]\n"
 	       "            [--mode WxH] [--seconds N] [--no-animate] [--full]\n"
-	       "            [--no-cursor] [--no-restore]\n"
+	       "            [--no-cursor] [--no-restore] [--damage-align N]\n"
 	       "  %s cursor [--seconds N]\n"
 	       "\n"
 	       "probe   read-only: USB descriptors, sysfs, module parameters and\n"
@@ -347,6 +376,7 @@ static int parse_test_args(int argc, char **argv, struct test_options *opt,
 	opt->animate = true;
 	opt->cursor = true;
 	opt->restore = true;
+	opt->damage_align = 1;
 
 	for (i = 0; i < argc; i++) {
 		if (!strcmp(argv[i], "--landscape")) {
@@ -375,6 +405,10 @@ static int parse_test_args(int argc, char **argv, struct test_options *opt,
 			opt->cursor = false;
 		} else if (!strcmp(argv[i], "--cursor")) {
 			opt->cursor = true;
+		} else if (!strcmp(argv[i], "--damage-align") && i + 1 < argc) {
+			opt->damage_align = atoi(argv[++i]);
+			if (opt->damage_align < 1)
+				opt->damage_align = 1;
 		} else if (!strcmp(argv[i], "--no-restore")) {
 			opt->restore = false;
 		} else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {

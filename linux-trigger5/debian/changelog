@@ -1,3 +1,11 @@
+trigger5 (1.0.3) unstable; urgency=medium
+
+  * Align partial-update damage rectangles to 4 pixels in the driver.  The
+    adapter corrupts the image for 1- and 2-pixel aligned row starts and
+    widths; 4 pixels is the smallest working boundary.
+
+ -- Jeringa <jeringa@example.com>  Mon, 23 Nov 2026 21:00:00 +1300
+
 trigger5 (1.0.2) unstable; urgency=medium
 
   * trigger5-tool: draw distinct framebuffer-oriented portrait-left and

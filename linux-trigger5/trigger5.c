@@ -71,7 +71,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      2
+#define DRIVER_PATCHLEVEL      3
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -215,6 +215,7 @@ struct trigger5_cursor_header {
 #define TRIGGER5_REQUEST_FIRMWARE_RESET                0xD1
 
 #define TRIGGER5_BULK_TIMEOUT_MS               2000
+#define TRIGGER5_DAMAGE_ALIGN                  4
 
 /*
  * Xorg's modesetting driver (as of 1.21) does not use the plane rotation
@@ -602,6 +603,22 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 			/* Never send pixels outside the visible source area. */
 			if (!drm_rect_intersect(&current_rect, &src_rect))
 				goto exit;
+
+			/*
+			 * The adapter's partial-update path requires the row
+			 * start and width to be 4-pixel aligned; 1- and
+			 * 2-pixel alignment corrupts the panel.  Expand the
+			 * merged damage rectangle outwards and clamp it back
+			 * to the visible source area.
+			 */
+			current_rect.x1 &= ~(TRIGGER5_DAMAGE_ALIGN - 1);
+			current_rect.x2 = (current_rect.x2 +
+					   TRIGGER5_DAMAGE_ALIGN - 1) &
+					  ~(TRIGGER5_DAMAGE_ALIGN - 1);
+			current_rect.x1 = max_t(int, current_rect.x1,
+						src_rect.x1);
+			current_rect.x2 = min_t(int, current_rect.x2,
+						src_rect.x2);
 		}
 
 		width = drm_rect_width(&current_rect);

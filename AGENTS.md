@@ -60,7 +60,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Packaging and CI
 
-- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.2_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
+- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.3_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
 - The package is DKMS-source only (`Architecture: all`). Keep the hand-written `debian/trigger5-dkms.postinst` and `prerm`: stock Debian/Ubuntu `dkms` lacks the `dh_dkms` addon.
 - `lintian` must stay clean; the `lint:debian` CI job builds and lints the package.
 - Containers share the host `uname -r`. `ci/test-install.sh` deliberately symlinks the host build tree and builds the distro kernel explicitly with `dkms -k <header-version>`; preserve that when editing CI.

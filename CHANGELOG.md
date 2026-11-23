@@ -4,6 +4,23 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.3] - 2026-11-23
+
+### Fixed
+
+- Landscape partial updates no longer corrupt the panel. The adapter requires
+  damage rows to start and end on a 4-pixel boundary; 1- and 2-pixel
+  alignment corrupts the image, so the driver now expands the merged damage
+  rectangle outwards and clamps it to the visible source area.
+- Rotated output is unaffected because it already sends complete frames on
+  every update.
+
+### Changed
+
+- `trigger5-tool` no longer pre-aligns damage rectangles by default, so the
+  landscape animation exercises the driver's alignment. `--damage-align N`
+  remains available for experiments.
+
 ## [1.0.2] - 2026-11-23
 
 ### Added
