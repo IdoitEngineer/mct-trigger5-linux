@@ -1,3 +1,11 @@
+trigger5 (1.0.2) unstable; urgency=medium
+
+  * trigger5-tool: draw distinct framebuffer-oriented portrait-left and
+    portrait-right test cards, with direction arrows and accent colours.
+  * Document the portrait orientation and the verified cursor behaviour.
+
+ -- Jeringa <jeringa@example.com>  Mon, 23 Nov 2026 20:00:00 +1300
+
 trigger5 (1.0.1) unstable; urgency=medium
 
   * Implement the hardware cursor by uploading the 64x64 ARGB bitmap in

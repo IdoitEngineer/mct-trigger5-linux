@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.1`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.2`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -123,7 +123,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.1_all.deb`.
+`trigger5-dkms_1.0.2_all.deb`.
 
 Manual build if you prefer:
 

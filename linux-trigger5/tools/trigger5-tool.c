@@ -117,6 +117,8 @@ static int run_test(struct test_options *opt)
 	uint32_t fb_w, fb_h;
 	uint32_t rotation;
 	const char *title, *detail;
+	uint32_t accent;
+	int arrow;
 	double start, elapsed = 0;
 	unsigned int frame = 0;
 	bool canvas_ready = false, fb_ready = false;
@@ -151,15 +153,45 @@ static int run_test(struct test_options *opt)
 		goto out_close;
 	fb_ready = true;
 
+	/*
+	 * Draw in framebuffer orientation.  The driver applies the plane
+	 * rotation, so pre-rotating the canvas here would cancel it and show a
+	 * landscape card in portrait modes.
+	 */
 	if (canvas_init(&canvas, (uint32_t *)fb.map, fb_w, fb_h, fb.pitch,
-			opt->rotation))
+			CANVAS_ROT_0))
 		goto out_close;
+	canvas.display_rotation = opt->rotation;
 	canvas_ready = true;
 
-	title = opt->rotation ? "PORTRAIT" : "LANDSCAPE";
-	detail = rotation_name(opt->rotation);
+	switch (opt->rotation) {
+	case CANVAS_ROT_90:
+		title = "PORTRAIT LEFT";
+		detail = "ROTATE 90 CCW";
+		accent = 0x0040a0ff;
+		arrow = -1;
+		break;
+	case CANVAS_ROT_270:
+		title = "PORTRAIT RIGHT";
+		detail = "ROTATE 270 CW";
+		accent = 0x00ff8000;
+		arrow = 1;
+		break;
+	case CANVAS_ROT_180:
+		title = "UPSIDE DOWN";
+		detail = "ROTATE 180";
+		accent = 0x00ff40ff;
+		arrow = 0;
+		break;
+	default:
+		title = "LANDSCAPE";
+		detail = "ROTATE 0 / NORMAL";
+		accent = 0x0040ff80;
+		arrow = 0;
+		break;
+	}
 
-	pattern_render(&canvas, title, detail);
+	pattern_render(&canvas, title, detail, accent, arrow);
 	canvas_present(&canvas);
 
 	if (display_set_mode(&d, &fb, rotation))

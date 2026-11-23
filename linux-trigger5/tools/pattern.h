@@ -29,6 +29,7 @@ struct canvas {
 	int fb_h;
 	size_t fb_pitch_pixels;
 	enum canvas_rotation rotation;
+	enum canvas_rotation display_rotation;
 };
 
 int canvas_init(struct canvas *c, uint32_t *fb, int fb_w, int fb_h,
@@ -53,7 +54,8 @@ void canvas_snapshot(struct canvas *c);
 void canvas_restore(struct canvas *c);
 void canvas_present(struct canvas *c);
 
-void pattern_render(struct canvas *c, const char *title, const char *detail);
+void pattern_render(struct canvas *c, const char *title, const char *detail,
+		    uint32_t accent, int arrow);
 void pattern_frame_counter(struct canvas *c, unsigned int frame);
 void pattern_block(struct canvas *c, int x, int y, int size, uint32_t color,
 		   const char *label);

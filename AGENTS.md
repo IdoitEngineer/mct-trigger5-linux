@@ -54,13 +54,13 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 ## Current branch traps (verify before trusting docs)
 
 - The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver implements this bulk path (plus the `0xC8` writes); the cursor is hardware-verified at 1920x1080. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
-- `trigger5-tool --portrait-left/right` currently draws a **landscape** card into the portrait framebuffer, so the panel shows landscape content. The intended fix is to draw in framebuffer orientation and let plane rotation produce the rotated image.
+- `trigger5-tool --portrait-left/right` now draws the card in **framebuffer orientation**, so the driver's plane rotation produces a genuine portrait bitmap (sideways on a landscape panel, upright on a rotated monitor).
 - 1920×1080 is the only validated mode. 1024×768 mode-set packets succeed but the panel stays blank; Windows sends compressed frames there (`flags=0x71`), while Linux sends raw RGB888. Do not advertise 1024×768 as working. The `0xD1 0x0001` display-disable has been removed; switching away from a blank 1024×768 can still fail until the adapter settles.
 - `trigger5-tool` restores the saved mode/FB/rotation atomically, but it still destroys the test framebuffer even when `display_restore()` fails. That cleanup bug is still open.
 
 ## Packaging and CI
 
-- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.1_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
+- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.2_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
 - The package is DKMS-source only (`Architecture: all`). Keep the hand-written `debian/trigger5-dkms.postinst` and `prerm`: stock Debian/Ubuntu `dkms` lacks the `dh_dkms` addon.
 - `lintian` must stay clean; the `lint:debian` CI job builds and lints the package.
 - Containers share the host `uname -r`. `ci/test-install.sh` deliberately symlinks the host build tree and builds the distro kernel explicitly with `dkms -k <header-version>`; preserve that when editing CI.
@@ -73,6 +73,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - `linux-trigger5/tools/README.md` — tool options and troubleshooting.
 - `docs/usb-protocol.md` — request codes, mode-set payload, bulk header.
 - `docs/call-flow.md` — X11/tool → DRM → driver → USB → panel call and data flow.
+- `CHANGELOG.md` — release history and known limitations.
 - `windows-RE-trigger/` — local Ghidra export of the vendor Windows driver (ignored; proprietary vendor-derived material).
 
 ## Agent skills
