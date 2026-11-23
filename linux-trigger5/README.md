@@ -43,10 +43,11 @@ driver.
    plane is exposed and `0xC8` enable/position writes are sent (enable register
    `0xE868`). Windows evidence shows the visible cursor is a 64×64 ARGB bitmap
    uploaded in a **bulk type-2 packet**, followed by type-2 show/move/hide
-   packets; `0xC8` alone is not sufficient. The Linux driver currently sends
-   only `0xC8`, so no cursor is visible yet. Cursor requests are only sent
-   while the display is configured, and a failed enable is latched rather than
-   retried on every move.
+   packets; `0xC8` alone is not sufficient. The Linux driver now uploads the
+   64×64 bitmap and sends the type-2 show/move/hide packets as well; hardware
+   verified at 1920×1080. Cursor requests are only sent while the display is
+   configured, and a failed enable is latched rather than retried on every
+   move.
 6. **No automatic USB reset after a transfer error.** Resetting the adapter
    could take down the whole xHCI controller, so the driver now latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.

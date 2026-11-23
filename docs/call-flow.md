@@ -86,17 +86,16 @@ drmModeAtomicCommit
            -> trigger5_plane_atomic_update
 ```
 
-`trigger5_crtc_atomic_disable()` currently:
+`trigger5_crtc_atomic_disable()`:
 
+- hides the cursor with a bulk type-2 hide packet
 - stops the bulk stream (`trigger5_stop_io`)
-- sends the vendor display-disable request
-- hides the cursor
+- clears `display_on`, `cursor_enabled` and the cached cursor bitmap
 
-> **Current bug:** the `0xD1 wValue=0x0001` display-disable request does not
-> exist in the Windows driver. The adapter returns `-121`/`-110` and stops
-> responding to the following mode set. This is why 1024×768 mode changes and
-> the tool restore wedge the device. The working plan is to remove that
-> request and keep only `trigger5_stop_io()` plus the state flags.
+It deliberately does **not** send `0xD1 wValue=0x0001`. That request does not
+exist in the Windows driver; the adapter returns `-121`/`-110` and then stops
+responding to the following mode set. The next enable sequence programs the
+new mode from scratch.
 
 `trigger5_crtc_atomic_enable()`:
 
@@ -213,8 +212,9 @@ visible cursor is uploaded through bulk packets with counter type 2:
 - command 3: show/move to a position;
 - command 5: hide.
 
-The extracted bitmap is a simple arrow. The Linux driver currently sends only
-`0xC8`, so the adapter has no cursor bitmap and displays nothing. See
+The extracted bitmap is a simple arrow. The Linux driver now uploads the
+64×64 bitmap and sends commands 0/3/5 as well; hardware verification is
+verified at 1920×1080. See
 [`../windows-RE-trigger/CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md)
 for the packet format and the extracted image.
 
@@ -275,13 +275,12 @@ failed with `ENOSPC` after a rotated test.
 
 ## 9. Known current limitations
 
-- The `0xD1 0x0001` display-disable request wedges the adapter on mode changes;
-  remove it and let the enable path program the new mode.
-- 1024×768 has not yet been validated on Linux; it uses a custom mode payload
-  with `wValue=0`, while Windows used the device mode-table index `2`.
-- The cursor requires the bulk type-2 bitmap/show/hide packets; the Linux
-  driver currently sends only `0xC8` control writes, so no cursor is displayed.
-  The Windows bitmap and show/hide sequence are documented in
+- 1920×1080 is the only validated mode. 1024×768 mode-set packets succeed,
+  but the panel stays blank: Windows sends compressed frames (`flags=0x71`)
+  there, while Linux sends raw RGB888 (`flags=0x01`). The 0xA4 table/index
+  semantics are not fully decoded.
+- The cursor bulk type-2 bitmap/show/hide path is implemented and verified at
+  1920×1080. The Windows bitmap and show/hide sequence are documented in
   `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 - The tool's portrait modes currently pre-rotate the canvas into the
   framebuffer, so the driver's plane rotation cancels the tool's rotation.

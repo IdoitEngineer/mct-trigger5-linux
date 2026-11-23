@@ -53,9 +53,10 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Current branch traps (verify before trusting docs)
 
-- The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver currently sends only `0xC8`, so no cursor is visible. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
+- The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver implements this bulk path (plus the `0xC8` writes); the cursor is hardware-verified at 1920x1080. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 - `trigger5-tool --portrait-left/right` currently draws a **landscape** card into the portrait framebuffer, so the panel shows landscape content. The intended fix is to draw in framebuffer orientation and let plane rotation produce the rotated image.
-- Restoring after a rotated test can fail with `restore CRTC: No space left on device`: the primary plane rotation is not reset before the legacy restore, so the kernel's viewport check swaps the mode dimensions. Prefer an atomic restore that sets rotation and framebuffer together, and do not destroy the test FB if restore failed.
+- 1920×1080 is the only validated mode. 1024×768 mode-set packets succeed but the panel stays blank; Windows sends compressed frames there (`flags=0x71`), while Linux sends raw RGB888. Do not advertise 1024×768 as working. The `0xD1 0x0001` display-disable has been removed; switching away from a blank 1024×768 can still fail until the adapter settles.
+- `trigger5-tool` restores the saved mode/FB/rotation atomically, but it still destroys the test framebuffer even when `display_restore()` fails. That cleanup bug is still open.
 
 ## Packaging and CI
 

@@ -347,11 +347,11 @@ driver never calls `request_firmware()`.
    ARGB8888 cursor plane and sends the `0xC8` enable/position writes. The
    Windows capture shows that the visible cursor is actually a 64×64 ARGB
    bitmap uploaded in a **bulk type-2 packet**, followed by type-2 show/hide
-   packets; `0xC8` alone does not display it. The Linux driver currently sends
-   only `0xC8`, so the cursor is not yet visible. See
-   `windows-RE-trigger/CURSOR-BULK-PACKETS.md`. Cursor requests are gated on
-   the display being configured, and a failed enable is latched rather than
-   retried on every move.
+   packets; `0xC8` alone does not display it. The Linux driver now uploads the
+   bitmap and sends the type-2 packets as well; the cursor is verified at
+   1920×1080. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`. Cursor requests are
+   gated on the display being configured, and a failed enable is latched rather
+   than retried on every move.
 6. **No automatic USB reset after a transfer error.** A USB port reset could
    take the whole xHCI controller down with it, so the driver latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.
@@ -363,8 +363,9 @@ type-2 packet**, then sends type-2 show/move and hide packets. It also uses the
 `0xC8` control writes as a secondary cursor path; the enable may STALL, and
 Windows continues regardless.
 
-The Linux driver currently implements only the `0xC8` control path, so no
-cursor is drawn. The RE notes and extracted bitmap are in
+The Linux driver uploads the same 64×64 ARGB bitmap and sends type-2 show/move
+and hide packets, in addition to the `0xC8` control writes. This is verified at
+1920×1080. The RE notes and extracted bitmaps are in
 `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 
 With native plane rotation (a compositor that sets the plane rotation
