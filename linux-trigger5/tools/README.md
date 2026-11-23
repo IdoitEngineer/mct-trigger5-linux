@@ -104,11 +104,10 @@ sudo trigger5-tool cursor --seconds 8
 ```
 
 The Windows driver uploads the cursor as a 64×64 ARGB bitmap in a bulk
-type-2 packet, followed by type-2 show/move/hide packets. The Linux driver
-currently sends only the `0xC8` control path, so the tool's 64×64 ARGB bitmap
-is not yet displayed; implementing the bulk cursor packet path is the next
-step. With X's software rotation, X may or may not use the cursor plane; see
-the main README for `full_frame_period_ms`.
+type-2 packet, followed by type-2 show/move/hide packets. The Linux driver now
+implements that bulk path as well, in addition to the `0xC8` control writes;
+hardware-verified at 1920×1080. With X's software rotation, X may or may not
+use the cursor plane; see the main README for `full_frame_period_ms`.
 
 ## Troubleshooting
 

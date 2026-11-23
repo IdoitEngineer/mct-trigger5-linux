@@ -104,11 +104,17 @@ struct trigger5_device {
        /* jiffies of the last complete frame (full_frame_period_ms). */
        unsigned long last_full_frame;
 
-       /* Whether the adapter's fixed hardware cursor is enabled. */
+       /* Whether the adapter's cursor overlay is enabled. */
        bool cursor_enabled;
 
        /* Whether the display has been configured and is streaming. */
        bool display_on;
+
+       /* Type-2 bulk cursor state. */
+       u16 cursor_sequence;
+       u32 cursor_fb_id;
+       bool cursor_bitmap_valid;
+       u8 *cursor_packet;
 
        /*
         * EDID read at probe time. Kept for the lifetime of the device:
@@ -166,6 +172,37 @@ struct trigger5_bulk_header {
        u8 checksum;
 } __packed;
 
+/*
+ * Type-2 cursor packets reuse the 20-byte bulk header. The low 12 bits of
+ * counter are a sequence; the high nibble is packet type 2. The command is the
+ * high nibble of the 32-bit field at offset 12.
+ */
+struct trigger5_cursor_header {
+       u8 magic; /* 0xfb */
+       u8 length; /* 0x14 */
+       __le16 counter; /* 0x2000 | sequence */
+       __le16 x;
+       __le16 y;
+       __le16 width;
+       __le16 height;
+       __le32 length_flags; /* payload length | (command << 28) */
+       u8 flags; /* 0x01 */
+       u8 extra; /* shape/format id */
+       u8 reserved;
+       u8 checksum;
+} __packed;
+
+#define TRIGGER5_CURSOR_TYPE           0x2
+#define TRIGGER5_CURSOR_CMD_BITMAP     0x0
+#define TRIGGER5_CURSOR_CMD_SHOW       0x3
+#define TRIGGER5_CURSOR_CMD_HIDE       0x5
+#define TRIGGER5_CURSOR_SIZE           64
+#define TRIGGER5_CURSOR_BITMAP_BYTES   (TRIGGER5_CURSOR_SIZE * \
+                                        TRIGGER5_CURSOR_SIZE * 4)
+#define TRIGGER5_CURSOR_PACKET_SIZE    (sizeof(struct trigger5_cursor_header) + \
+                                        TRIGGER5_CURSOR_BITMAP_BYTES)
+#define TRIGGER5_CURSOR_SHAPE_ARROW    0x10
+
 #define TRIGGER5_REQUEST_KEEPALIVE             0x91
 #define TRIGGER5_REQUEST_GET_REGISTER          0xA5
 #define TRIGGER5_REQUEST_GET_STATUS            0xA6
@@ -201,21 +238,6 @@ module_param(full_frame_period_ms, uint, 0644);
 MODULE_PARM_DESC(full_frame_period_ms,
 		 "Force a complete frame when this many milliseconds have elapsed (0 = off)");
 
-/*
- * Diagnostic override: use a mode-table index as SET_MODE wValue instead of
- * the custom-mode value 0. -1 keeps the existing behaviour.
- */
-static int set_mode_index = -1;
-static uint set_mode_width;
-static uint set_mode_height;
-module_param(set_mode_index, int, 0644);
-module_param(set_mode_width, uint, 0644);
-module_param(set_mode_height, uint, 0644);
-MODULE_PARM_DESC(set_mode_index,
-		 "Force SET_MODE wValue for the configured width/height; -1 uses 0");
-MODULE_PARM_DESC(set_mode_width, "Width for set_mode_index");
-MODULE_PARM_DESC(set_mode_height, "Height for set_mode_index");
-
 #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
 
 static void trigger5_stop_io(struct trigger5_device *trigger5)
@@ -224,6 +246,17 @@ static void trigger5_stop_io(struct trigger5_device *trigger5)
 
        for (i = 0; i < TRIGGER5_NUM_URBS; i++)
                usb_kill_urb(trigger5->transfers[i].urb);
+
+       /*
+        * usb_kill_urb() runs each completion callback, which completes the
+        * transfer.  Reinitialise to exactly one "done" credit so the next
+        * frame cannot consume stale completions and submit a burst of URBs.
+        */
+       for (i = 0; i < TRIGGER5_NUM_URBS; i++) {
+               reinit_completion(&trigger5->transfers[i].done);
+               complete(&trigger5->transfers[i].done);
+       }
+       trigger5->next_transfer = 0;
 }
 
 static int trigger5_usb_suspend(struct usb_interface *interface,
@@ -381,8 +414,9 @@ static int trigger5_submit_urb(struct trigger5_transfer *transfer, size_t len)
        transfer->urb->transfer_buffer_length = len;
        ret = usb_submit_urb(transfer->urb, GFP_KERNEL);
        if (ret) {
-               drm_err_once(&transfer->trigger5->drm,
-                            "failed to submit USB transfer: %d\n", ret);
+               if (ret != -ENODEV && ret != -ESHUTDOWN && ret != -ECONNRESET)
+                       drm_err_once(&transfer->trigger5->drm,
+                                    "failed to submit USB transfer: %d\n", ret);
                complete(&transfer->done);
        }
 
@@ -774,8 +808,134 @@ static const u32 trigger5_plane_formats[] = {
 };
 
 /*
- * The adapter has a fixed hardware cursor image. X (and other compositors)
- * only get to set its position; the shape cannot be uploaded.
+ * Cursor packets (counter type 2).
+ *
+ * The Windows driver draws the cursor by uploading a 64x64 ARGB bitmap and
+ * then sending show/move and hide packets over bulk OUT.  The 0xC8 control
+ * path is kept as a secondary compatibility path.
+ */
+static int trigger5_cursor_bulk_send(struct trigger5_device *trigger5,
+				     const void *data, size_t len)
+{
+	struct usb_device *udev = interface_to_usbdev(trigger5->intf);
+	int actual = 0;
+	int ret;
+
+	if (atomic_read(&trigger5->needs_reset))
+		return -EIO;
+
+	ret = usb_bulk_msg(udev, trigger5->bulk_pipe, (void *)data, (int)len,
+			   &actual, 1000);
+	if (ret) {
+		drm_warn_once(&trigger5->drm,
+			      "cursor bulk request failed: %d\n", ret);
+		return ret;
+	}
+	if (actual != (int)len) {
+		drm_warn_once(&trigger5->drm,
+			      "cursor bulk short write: %d/%zu\n", actual, len);
+		return -EIO;
+	}
+	return 0;
+}
+
+static void trigger5_cursor_header_init(struct trigger5_cursor_header *hdr,
+					struct trigger5_device *trigger5,
+					u8 command, u16 x, u16 y,
+					u16 width, u16 height,
+					u32 payload_len, u8 extra)
+{
+	u8 *bytes = (u8 *)hdr;
+	u8 sum = 0;
+	int i;
+
+	memset(hdr, 0, sizeof(*hdr));
+	hdr->magic = 0xfb;
+	hdr->length = sizeof(*hdr);
+	hdr->counter = cpu_to_le16((TRIGGER5_CURSOR_TYPE << 12) |
+				   (trigger5->cursor_sequence++ & 0xfff));
+	hdr->x = cpu_to_le16(x);
+	hdr->y = cpu_to_le16(y);
+	hdr->width = cpu_to_le16(width);
+	hdr->height = cpu_to_le16(height);
+	hdr->length_flags = cpu_to_le32((payload_len & 0x0fffffff) |
+					 ((u32)command << 28));
+	hdr->flags = 0x01;
+	hdr->extra = extra;
+	for (i = 0; i < 19; i++)
+		sum += bytes[i];
+	hdr->checksum = (u8)-sum;
+}
+
+static void trigger5_cursor_bulk_hide(struct trigger5_device *trigger5)
+{
+	struct trigger5_cursor_header *hdr;
+
+	if (!trigger5->cursor_packet)
+		return;
+
+	/* usb_bulk_msg() cannot DMA-map a stack buffer. */
+	hdr = (struct trigger5_cursor_header *)trigger5->cursor_packet;
+	trigger5_cursor_header_init(hdr, trigger5, TRIGGER5_CURSOR_CMD_HIDE,
+				    0, 0, 0, 0, 0, 0);
+	trigger5_cursor_bulk_send(trigger5, hdr, sizeof(*hdr));
+	trigger5->cursor_bitmap_valid = false;
+}
+
+static int trigger5_cursor_bulk_upload(struct trigger5_device *trigger5,
+				       struct drm_plane_state *state,
+				       u16 x, u16 y)
+{
+	struct trigger5_cursor_header *hdr =
+		(struct trigger5_cursor_header *)trigger5->cursor_packet;
+	struct drm_shadow_plane_state *shadow =
+		to_drm_shadow_plane_state(state);
+	const struct iosys_map *src = &shadow->data[0];
+	u8 *payload = trigger5->cursor_packet + sizeof(*hdr);
+	unsigned int pitch = state->fb->pitches[0];
+	int yy;
+
+	if (state->fb->format->format != DRM_FORMAT_ARGB8888 ||
+	    state->fb->width != TRIGGER5_CURSOR_SIZE ||
+	    state->fb->height != TRIGGER5_CURSOR_SIZE)
+		return -EINVAL;
+
+	trigger5_cursor_header_init(hdr, trigger5, TRIGGER5_CURSOR_CMD_BITMAP,
+				    x, y, TRIGGER5_CURSOR_SIZE,
+				    TRIGGER5_CURSOR_SIZE,
+				    TRIGGER5_CURSOR_BITMAP_BYTES,
+				    TRIGGER5_CURSOR_SHAPE_ARROW);
+
+	/* Preserve the little-endian BGRA bytes expected by the adapter. */
+	for (yy = 0; yy < TRIGGER5_CURSOR_SIZE; yy++)
+		iosys_map_memcpy_from(payload + yy * TRIGGER5_CURSOR_SIZE * 4,
+				      src, yy * pitch,
+				      TRIGGER5_CURSOR_SIZE * 4);
+
+	return trigger5_cursor_bulk_send(trigger5, hdr,
+					 sizeof(*hdr) +
+					 TRIGGER5_CURSOR_BITMAP_BYTES);
+}
+
+static void trigger5_cursor_bulk_show(struct trigger5_device *trigger5,
+				      u16 x, u16 y)
+{
+	struct trigger5_cursor_header *hdr;
+
+	if (!trigger5->cursor_packet)
+		return;
+
+	/* usb_bulk_msg() cannot DMA-map a stack buffer. */
+	hdr = (struct trigger5_cursor_header *)trigger5->cursor_packet;
+	trigger5_cursor_header_init(hdr, trigger5, TRIGGER5_CURSOR_CMD_SHOW,
+				    x, y, TRIGGER5_CURSOR_SIZE,
+				    TRIGGER5_CURSOR_SIZE, 0, 0);
+	trigger5_cursor_bulk_send(trigger5, hdr, sizeof(*hdr));
+}
+
+/*
+ * The adapter's cursor is a 64x64 ARGB overlay uploaded over bulk OUT.  The
+ * 0xC8 control writes are secondary.
  */
 static int trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
 				   u16 index, const void *data, u16 size)
@@ -788,8 +948,6 @@ static int trigger5_cursor_control(struct trigger5_device *trigger5, u16 value,
 					   USB_RECIP_DEVICE,
 				   value, index, data, size,
 				   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
-	if (ret)
-		drm_warn_once(&trigger5->drm, "cursor request failed: %d\n", ret);
 	return ret;
 }
 
@@ -809,9 +967,9 @@ static int trigger5_cursor_set_enabled(struct trigger5_device *trigger5,
 	 * every cursor move, and never block positions on this return value.
 	 */
 	if (ret && enable)
-		drm_info_once(&trigger5->drm,
-			      "cursor enable returned %d; continuing with positions\n",
-			      ret);
+		drm_dbg(&trigger5->drm,
+			"cursor enable returned %d; continuing with positions\n",
+			ret);
 	trigger5->cursor_enabled = enable;
 
 	return ret;
@@ -837,13 +995,20 @@ static void trigger5_cursor_apply(struct trigger5_device *trigger5,
 	value = (x >= 0) ? (u16)x : (u16)(x - 1);
 	index = (y >= 0) ? (u16)y : (u16)(y - 1);
 
+	if (!trigger5->cursor_bitmap_valid ||
+	    trigger5->cursor_fb_id != state->fb->base.id) {
+		if (trigger5_cursor_bulk_upload(trigger5, state, value, index))
+			return;
+		trigger5->cursor_fb_id = state->fb->base.id;
+		trigger5->cursor_bitmap_valid = true;
+	}
+
+	trigger5_cursor_bulk_show(trigger5, value, index);
+
 	ret = trigger5_cursor_control(trigger5, value, index, NULL, 0);
 	if (ret)
 		drm_warn_once(&trigger5->drm,
 			      "cursor position failed: %d\n", ret);
-	else
-		drm_info_once(&trigger5->drm,
-			      "cursor position request accepted\n");
 }
 
 static void trigger5_cursor_atomic_update(struct drm_plane *plane,
@@ -854,8 +1019,12 @@ static void trigger5_cursor_atomic_update(struct drm_plane *plane,
 	struct trigger5_device *trigger5 = to_trigger5(plane->dev);
 
 	if (!new_state->fb || !new_state->crtc) {
+		if (trigger5->display_on &&
+		    (trigger5->cursor_enabled || trigger5->cursor_bitmap_valid))
+			trigger5_cursor_bulk_hide(trigger5);
 		if (trigger5->cursor_enabled)
 			trigger5_cursor_set_enabled(trigger5, false);
+		trigger5->cursor_bitmap_valid = false;
 		return;
 	}
 
@@ -922,17 +1091,20 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        struct trigger5_mode_request request = {};
        u8 data[4];
        u64 clk;
-       u16 mode_value;
        int idx, ret;
 
        if (!drm_dev_enter(crtc->dev, &idx))
                return;
 
-       drm_info(&trigger5->drm, "enabling %dx%d@%d\n", mode->hdisplay,
-                mode->vdisplay, drm_mode_vrefresh(mode));
-
        trigger5_stop_io(trigger5);
-       drm_info(&trigger5->drm, "mode step: stream stopped\n");
+
+       /*
+        * Give the adapter time to drain the bulk stream before the first
+        * control request of the new mode.  Without this, reset0 can return
+        * -121 immediately after a mode change even though the same request
+        * succeeds once the adapter has settled.
+        */
+       msleep(100);
 
        /* Sequence recovered from USB captures. */
        ret = usb_control_msg_recv(udev, 0,
@@ -942,10 +1114,9 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                   0x0000, 0x0000, data, 1,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        if (ret) {
-               drm_err(&trigger5->drm, "mode step: reset0 failed: %d\n", ret);
+               drm_err(&trigger5->drm, "firmware reset failed: %d\n", ret);
                goto err;
        }
-       drm_info(&trigger5->drm, "mode step: reset0 ok\n");
 
        request.height = cpu_to_be16(mode->vdisplay);
        request.height_minus_one = cpu_to_be16(mode->vdisplay - 1);
@@ -980,24 +1151,18 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                request.pll.prediv, request.pll.mul1, request.pll.mul2,
                request.pll.div1, request.pll.div2, clk, mode->clock);
 
-       /* wValue can be any value since we are sending a custom mode */
-       mode_value = 0;
-       if (set_mode_index >= 0 &&
-           mode->hdisplay == set_mode_width &&
-           mode->vdisplay == set_mode_height)
-               mode_value = (u16)set_mode_index;
-       drm_info(&trigger5->drm, "mode request wValue=%u: %*ph\n",
-                mode_value, (int)sizeof(request), &request);
        ret = usb_control_msg_send(udev, 0, TRIGGER5_REQUEST_SET_MODE,
                                   USB_DIR_OUT | USB_TYPE_VENDOR |
                                           USB_RECIP_DEVICE,
-                                  mode_value, 0, &request, sizeof(request),
+                                  0, 0, &request, sizeof(request),
                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
        if (ret) {
-               drm_err(&trigger5->drm, "mode step: set_mode failed: %d\n", ret);
+               drm_err(&trigger5->drm, "mode set failed: %d\n", ret);
                goto err;
        }
-       drm_info(&trigger5->drm, "mode step: set_mode ok\n");
+
+       /* The vendor driver leaves ~105 ms between SET_MODE and reset201. */
+       msleep(100);
 
        ret = usb_control_msg_recv(udev, 0,
                                   TRIGGER5_REQUEST_FIRMWARE_RESET,
@@ -1006,10 +1171,9 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                   0x0201, 0x0000, data, 1,
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        if (ret) {
-               drm_err(&trigger5->drm, "mode step: reset201 failed: %d\n", ret);
+               drm_err(&trigger5->drm, "post-mode reset failed: %d\n", ret);
                goto err;
        }
-       drm_info(&trigger5->drm, "mode step: reset201 ok\n");
 
        ret = usb_control_msg_recv(udev, 0,
                                   TRIGGER5_REQUEST_GET_REGISTER,
@@ -1018,10 +1182,9 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                   0x0000, 0xec34, data, sizeof(data),
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        if (ret) {
-               drm_err(&trigger5->drm, "mode step: get_reg failed: %d\n", ret);
+               drm_err(&trigger5->drm, "register read failed: %d\n", ret);
                goto err;
        }
-       drm_info(&trigger5->drm, "mode step: get_reg ok\n");
 
        data[0] = 0x60;
        data[1] = 0x00;
@@ -1034,10 +1197,9 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                   0x0000, 0xec34, data, sizeof(data),
                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
        if (ret) {
-               drm_err(&trigger5->drm, "mode step: set_reg failed: %d\n", ret);
+               drm_err(&trigger5->drm, "register write failed: %d\n", ret);
                goto err;
        }
-       drm_info(&trigger5->drm, "mode step: set_reg ok\n");
 
        /*
         * A successful re-initialisation clears any latched transfer error
@@ -1046,6 +1208,9 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        atomic_set(&trigger5->needs_reset, 0);
        trigger5->full_frame = true;
        trigger5->display_on = true;
+       trigger5->cursor_bitmap_valid = false;
+       trigger5->cursor_fb_id = 0;
+       trigger5->cursor_sequence = 0;
 
        /*
         * Match the Windows driver: send the (STALLing) enable once after the
@@ -1053,7 +1218,7 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
         */
        trigger5->cursor_enabled = false;
        ret = trigger5_cursor_set_enabled(trigger5, true);
-       drm_info(&trigger5->drm, "cursor enable at mode set: %d\n", ret);
+       drm_dbg(&trigger5->drm, "cursor enable at mode set: %d\n", ret);
 
        /* The cursor plane update ran before this point; apply it now. */
        trigger5_cursor_apply(trigger5,
@@ -1073,39 +1238,25 @@ static void trigger5_crtc_atomic_disable(struct drm_crtc *crtc,
                                         TRIGGER5_ATOMIC_COMMIT *state)
 {
        struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
-       struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-       u8 data;
-       int idx, ret;
+       int idx;
 
        if (!drm_dev_enter(crtc->dev, &idx))
                return;
 
-       drm_info(&trigger5->drm, "disabling display\n");
+       /*
+        * Do not send a cursor bulk-hide packet here.  A hide packet followed
+        * immediately by a mode change has been observed to make the first
+        * reset0 of the new mode fail with -121.  The new mode set clears the
+        * overlay; the cursor plane update hides it when the plane is disabled.
+        *
+        * Also do not send 0xD1 0x0001: it does not exist in the Windows
+        * driver and wedges the adapter.
+        */
        trigger5_stop_io(trigger5);
-       drm_info(&trigger5->drm, "display step: stream stopped\n");
-
-       ret = usb_control_msg_recv(udev, 0,
-                                  TRIGGER5_REQUEST_FIRMWARE_RESET,
-                                  USB_DIR_IN | USB_TYPE_VENDOR |
-                                          USB_RECIP_DEVICE,
-                                  0x0001, 0x0000, &data, 1,
-                                  USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
-       if (ret)
-               drm_err(&trigger5->drm, "display step: disable failed: %d\n", ret);
-       else
-               drm_info(&trigger5->drm, "display step: disable ok\n");
 
        trigger5->display_on = false;
-
-       /*
-        * Only ask the adapter to hide the cursor if the display really went
-        * down; after a failed disable the control endpoint is usually wedged
-        * and another request would just time out.
-        */
-       if (!ret)
-               trigger5_cursor_set_enabled(trigger5, false);
-       else
-               trigger5->cursor_enabled = false;
+       trigger5->cursor_enabled = false;
+       trigger5->cursor_bitmap_valid = false;
 
        drm_dev_exit(idx);
 }
@@ -1422,6 +1573,12 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                                           &trigger5->encoder);
        if (ret)
                return ret;
+
+       trigger5->cursor_packet = devm_kzalloc(&interface->dev,
+                                              TRIGGER5_CURSOR_PACKET_SIZE,
+                                              GFP_KERNEL);
+       if (!trigger5->cursor_packet)
+               goto err_free_urbs;
 
        ret = trigger5_alloc_urbs(trigger5);
        if (ret)
