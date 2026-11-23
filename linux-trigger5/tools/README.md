@@ -76,9 +76,14 @@ sudo trigger5-tool test --upside-down     # DRM rotate-180
 ```
 
 For portrait, the framebuffer is 1080×1920 while the CRTC keeps the panel's
-1920×1080 mode; the driver rotates the pixels into the panel. The test pattern
-is drawn in logical 1920×1080 orientation, so labels read correctly on a
-physically rotated monitor.
+1920×1080 mode; the driver rotates the pixels into the panel. The test card is
+drawn **in framebuffer orientation**, so `--portrait-left` is a genuine
+portrait bitmap: on a landscape panel it appears rotated 90°, and on a
+physically rotated monitor the labels read upright.
+
+The left and right portrait runs are distinct cards: left uses a blue accent
+and a left-pointing arrow, right uses an orange accent and a right-pointing
+arrow, so the two orientations are visually unambiguous.
 
 Other options:
 

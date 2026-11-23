@@ -122,6 +122,7 @@ int canvas_init(struct canvas *c, uint32_t *fb, int fb_w, int fb_h,
 	c->fb_h = fb_h;
 	c->fb_pitch_pixels = pitch_bytes / 4;
 	c->rotation = rotation;
+	c->display_rotation = rotation;
 
 	c->logical = calloc((size_t)c->logical_w * c->logical_h, sizeof(uint32_t));
 	c->snapshot = calloc((size_t)c->logical_w * c->logical_h, sizeof(uint32_t));
@@ -278,7 +279,26 @@ void canvas_present(struct canvas *c)
 				  c->logical[(size_t)y * c->logical_w + x]);
 }
 
-void pattern_render(struct canvas *c, const char *title, const char *detail)
+static void canvas_arrow(struct canvas *c, int cx, int cy, int dir,
+			 int length, int thickness, uint32_t color)
+{
+	int half = length / 2;
+	int head = length / 3;
+	int tip = cx + dir * half;
+	int tail = cx - dir * half;
+	int i;
+
+	for (i = -thickness / 2; i <= thickness / 2; i++) {
+		canvas_line(c, tail, cy + i, tip, cy + i, color);
+		canvas_line(c, tip, cy + i, tip - dir * head, cy - head + i,
+			    color);
+		canvas_line(c, tip, cy + i, tip - dir * head, cy + head + i,
+			    color);
+	}
+}
+
+void pattern_render(struct canvas *c, const char *title, const char *detail,
+		    uint32_t accent, int arrow)
 {
 	static const uint32_t bars[] = {
 		0x00ffffff, 0x00ffff00, 0x0000ffff, 0x0000ff00,
@@ -339,16 +359,22 @@ void pattern_render(struct canvas *c, const char *title, const char *detail)
 	canvas_line(c, cx - (int)w / 16, cy, cx + (int)w / 16, cy, COLOR_WHITE);
 	canvas_line(c, cx, cy - (int)h / 12, cx, cy + (int)h / 12, COLOR_WHITE);
 	canvas_circle(c, cx, cy, (int)(h / 14), 3, COLOR_WHITE);
+	if (arrow)
+		canvas_arrow(c, cx, cy, arrow, (int)(w / 5), 10, 0x00000000);
+	if (arrow)
+		canvas_arrow(c, cx, cy, arrow, (int)(w / 5), 6, accent);
 	canvas_fill_rect(c, cx - 4, cy - 4, 8, 8, 0x00ff0000);
 
 	/* Title block. */
+	canvas_fill_rect(c, (int)(w / 20), (int)(h * 2 / 3) - 20,
+			 (int)(w / 6), 8, accent);
 	canvas_text(c, (int)(w / 20), (int)(h * 2 / 3), (int)scale, COLOR_WHITE,
 		    title);
 	canvas_text(c, (int)(w / 20), (int)(h * 2 / 3) + 10 * (int)scale,
-		    (int)small, 0x00b0d0ff, detail);
+		    (int)small, accent, detail);
 
 	snprintf(footer, sizeof(footer), "%ux%u  ROT %d  FB %dx%d", w, h,
-		 (int)c->rotation, c->fb_w, c->fb_h);
+		 (int)c->display_rotation, c->fb_w, c->fb_h);
 	canvas_text(c, (int)(w / 20), (int)(h - h / 16), (int)small,
 		    0x00ffffff, footer);
 

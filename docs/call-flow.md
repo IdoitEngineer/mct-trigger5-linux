@@ -282,6 +282,5 @@ failed with `ENOSPC` after a rotated test.
 - The cursor bulk type-2 bitmap/show/hide path is implemented and verified at
   1920×1080. The Windows bitmap and show/hide sequence are documented in
   `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
-- The tool's portrait modes currently pre-rotate the canvas into the
-  framebuffer, so the driver's plane rotation cancels the tool's rotation.
-  Portrait output should be drawn in framebuffer orientation.
+- `trigger5-tool` portrait modes now draw the canvas in framebuffer
+  orientation; the driver's plane rotation produces the visible rotation.
