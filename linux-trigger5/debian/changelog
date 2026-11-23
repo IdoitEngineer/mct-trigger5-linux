@@ -1,3 +1,15 @@
+trigger5 (1.0.1) unstable; urgency=medium
+
+  * Implement the hardware cursor by uploading the 64x64 ARGB bitmap in
+    bulk type-2 packets and sending show/move/hide packets.
+  * Remove the invalid 0xD1 0x0001 display-disable that wedged the adapter
+    on a mode change.
+  * Restore URB completion credits after stopping I/O and add the Windows
+    mode-set drain delays.
+  * Suppress the expected -ENODEV submit error during disconnect.
+
+ -- Jeringa <jeringa@example.com>  Mon, 23 Nov 2026 18:45:00 +1300
+
 trigger5 (1.0) unstable; urgency=medium
 
   * Initial local Debian packaging.

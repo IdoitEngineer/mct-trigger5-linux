@@ -22,7 +22,7 @@
  #include <drm/drm_connector.h>
  #include <drm/drm_crtc.h>
  #include <drm/drm_crtc_helper.h>
-@@ -39,11 +49,23 @@
+@@ -39,16 +49,29 @@
  #include <drm/drm_managed.h>
  #include <drm/drm_modeset_helper.h>
  #include <drm/drm_modeset_helper_vtables.h>
@@ -46,7 +46,13 @@
  #define DRIVER_NAME            "trigger5"
  #define DRIVER_DESC            "MCT Trigger 5 USB display adapter"
  
-@@ -67,11 +89,39 @@
+ #define DRIVER_MAJOR           1
+ #define DRIVER_MINOR           0
++#define DRIVER_PATCHLEVEL      1
+ 
+ #define TRIGGER5_NUM_URBS      8
+ #define TRIGGER5_URB_BUF_SIZE  SZ_128K
+@@ -67,11 +90,39 @@
  
         struct drm_connector connector;
         struct drm_plane plane;
@@ -86,7 +92,7 @@
         int next_transfer;
         struct trigger5_transfer transfers[TRIGGER5_NUM_URBS];
  
-@@ -122,6 +172,37 @@
+@@ -122,6 +173,37 @@
         u8 checksum;
  } __packed;
  
@@ -124,7 +130,7 @@
  #define TRIGGER5_REQUEST_KEEPALIVE             0x91
  #define TRIGGER5_REQUEST_GET_REGISTER          0xA5
  #define TRIGGER5_REQUEST_GET_STATUS            0xA6
-@@ -129,10 +210,34 @@
+@@ -129,10 +211,34 @@
  #define TRIGGER5_REQUEST_SET_MODE              0xC3
  #define TRIGGER5_REQUEST_SET_REGISTER          0xC4
  #define TRIGGER5_REQUEST_SET_CURSOR_POSITION   0xC8
@@ -159,7 +165,7 @@
  #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
  
  static void trigger5_stop_io(struct trigger5_device *trigger5)
-@@ -141,6 +246,17 @@
+@@ -141,6 +247,17 @@
  
         for (i = 0; i < TRIGGER5_NUM_URBS; i++)
                 usb_kill_urb(trigger5->transfers[i].urb);
@@ -177,7 +183,7 @@
  }
  
  static int trigger5_usb_suspend(struct usb_interface *interface,
-@@ -173,7 +289,9 @@
+@@ -173,12 +290,15 @@
         /* GEM hooks */
         .fops = &trigger5_driver_fops,
         DRM_GEM_SHMEM_DRIVER_OPS,
@@ -187,7 +193,13 @@
  
         .name = DRIVER_NAME,
         .desc = DRIVER_DESC,
-@@ -230,13 +348,20 @@
+        .major = DRIVER_MAJOR,
+        .minor = DRIVER_MINOR,
++       .patchlevel = DRIVER_PATCHLEVEL,
+ };
+ 
+ static const struct drm_mode_config_funcs trigger5_mode_config_funcs = {
+@@ -230,13 +350,20 @@
         return best_err;
  }
  
@@ -212,7 +224,7 @@
  }
  
  static void trigger5_urb_complete(struct urb *urb)
-@@ -289,8 +414,9 @@
+@@ -289,8 +416,9 @@
         transfer->urb->transfer_buffer_length = len;
         ret = usb_submit_urb(transfer->urb, GFP_KERNEL);
         if (ret) {
@@ -224,7 +236,7 @@
                 complete(&transfer->done);
         }
  
-@@ -345,7 +471,7 @@
+@@ -345,7 +473,7 @@
  }
  
  static int trigger5_plane_atomic_check(struct drm_plane *plane,
@@ -233,7 +245,7 @@
  {
         struct drm_plane_state *new_plane_state =
                 drm_atomic_get_new_plane_state(state, plane);
-@@ -390,96 +516,278 @@
+@@ -390,96 +518,278 @@
  }
  
  static void trigger5_plane_atomic_update(struct drm_plane *plane,
@@ -598,7 +610,7 @@
  }
  
  static const struct drm_plane_helper_funcs trigger5_plane_helper_funcs = {
-@@ -499,8 +807,281 @@
+@@ -499,8 +809,281 @@
         DRM_FORMAT_XRGB8888,
  };
  
@@ -881,7 +893,7 @@
  {
         struct trigger5_device *trigger5 = to_trigger5(crtc->dev);
         struct usb_device *udev = interface_to_usbdev(trigger5->intf);
-@@ -517,6 +1098,14 @@
+@@ -517,6 +1100,14 @@
  
         trigger5_stop_io(trigger5);
  
@@ -896,7 +908,7 @@
         /* Sequence recovered from USB captures. */
         ret = usb_control_msg_recv(udev, 0,
                                    TRIGGER5_REQUEST_FIRMWARE_RESET,
-@@ -524,8 +1113,10 @@
+@@ -524,8 +1115,10 @@
                                            USB_RECIP_DEVICE,
                                    0x0000, 0x0000, data, 1,
                                    USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
@@ -908,7 +920,7 @@
  
         request.height = cpu_to_be16(mode->vdisplay);
         request.height_minus_one = cpu_to_be16(mode->vdisplay - 1);
-@@ -560,14 +1151,18 @@
+@@ -560,14 +1153,18 @@
                 request.pll.prediv, request.pll.mul1, request.pll.mul2,
                 request.pll.div1, request.pll.div2, clk, mode->clock);
  
@@ -929,7 +941,7 @@
  
         ret = usb_control_msg_recv(udev, 0,
                                    TRIGGER5_REQUEST_FIRMWARE_RESET,
-@@ -575,8 +1170,10 @@
+@@ -575,8 +1172,10 @@
                                            USB_RECIP_DEVICE,
                                    0x0201, 0x0000, data, 1,
                                    USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
@@ -941,7 +953,7 @@
  
         ret = usb_control_msg_recv(udev, 0,
                                    TRIGGER5_REQUEST_GET_REGISTER,
-@@ -584,8 +1181,10 @@
+@@ -584,8 +1183,10 @@
                                            USB_RECIP_DEVICE,
                                    0x0000, 0xec34, data, sizeof(data),
                                    USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
@@ -953,7 +965,7 @@
  
         data[0] = 0x60;
         data[1] = 0x00;
-@@ -597,38 +1196,67 @@
+@@ -597,38 +1198,67 @@
                                            USB_RECIP_DEVICE,
                                    0x0000, 0xec34, data, sizeof(data),
                                    USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
@@ -1034,7 +1046,7 @@
  
         drm_dev_exit(idx);
  }
-@@ -672,7 +1300,9 @@
+@@ -672,7 +1302,9 @@
  };
  
  static const struct drm_crtc_funcs trigger5_crtc_funcs = {
@@ -1044,7 +1056,7 @@
         .destroy = drm_crtc_cleanup,
         .set_config = drm_atomic_helper_set_config,
         .page_flip = drm_atomic_helper_page_flip,
-@@ -708,18 +1338,33 @@
+@@ -708,18 +1340,33 @@
         return 0;
  }
  
@@ -1085,7 +1097,7 @@
  }
  
  static enum drm_connector_status
-@@ -755,7 +1400,9 @@
+@@ -755,7 +1402,9 @@
         .fill_modes = drm_helper_probe_single_connector_modes,
         .destroy = drm_connector_cleanup,
         .detect = trigger5_detect,
@@ -1095,7 +1107,7 @@
         .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
         .atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
  };
-@@ -774,14 +1421,26 @@
+@@ -774,14 +1423,26 @@
         return ret;
  }
  
@@ -1122,7 +1134,7 @@
         struct usb_device *udev = interface_to_usbdev(interface);
         /* Heuristic: Presence of audio interfaces indicates HDMI. */
         bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
-@@ -807,6 +1466,11 @@
+@@ -807,6 +1468,11 @@
  
         dev = &trigger5->drm;
  
@@ -1134,7 +1146,7 @@
         dma_dev = usb_intf_get_dma_device(interface);
         if (dma_dev) {
                 drm_dev_set_dma_dev(dev, dma_dev);
-@@ -815,6 +1479,7 @@
+@@ -815,6 +1481,7 @@
                 drm_warn(dev,
                          "buffer sharing not supported"); /* not an error */
         }
@@ -1142,7 +1154,7 @@
  
         ret = drmm_mode_config_init(dev);
         if (ret)
-@@ -828,6 +1493,8 @@
+@@ -828,6 +1495,8 @@
         dev->mode_config.max_width = 8191;
         dev->mode_config.min_height = 1;
         dev->mode_config.max_height = 8191;
@@ -1151,7 +1163,7 @@
  
         dev->mode_config.funcs = &trigger5_mode_config_funcs;
         dev->mode_config.helper_private = &trigger5_mode_config_helper_funcs;
-@@ -843,8 +1510,35 @@
+@@ -843,8 +1512,35 @@
         drm_plane_helper_add(&trigger5->plane, &trigger5_plane_helper_funcs);
         drm_plane_enable_fb_damage_clips(&trigger5->plane);
  
@@ -1188,7 +1200,7 @@
         if (ret)
                 return ret;
  
-@@ -856,6 +1550,18 @@
+@@ -856,6 +1552,18 @@
         if (ret)
                 return ret;
  
@@ -1207,7 +1219,7 @@
         ret = drm_encoder_init(dev, &trigger5->encoder, &trigger5_encoder_funcs,
                                is_hdmi ? DRM_MODE_ENCODER_TMDS :
                                          DRM_MODE_ENCODER_DAC, NULL);
-@@ -868,6 +1574,12 @@
+@@ -868,6 +1576,12 @@
         if (ret)
                 return ret;
  
@@ -1220,7 +1232,7 @@
         ret = trigger5_alloc_urbs(trigger5);
         if (ret)
                 goto err_free_urbs;
-@@ -882,7 +1594,15 @@
+@@ -882,7 +1596,15 @@
         if (ret)
                 goto err_poll_fini;
  
