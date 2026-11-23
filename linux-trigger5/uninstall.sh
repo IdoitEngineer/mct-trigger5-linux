@@ -5,7 +5,7 @@
 # Remove the MCT Trigger 5 DRM driver installed by install.sh.
 set -eu
 
-VERSION=1.0
+VERSION=1.0.1
 MODULE=trigger5
 
 if [ "$(id -u)" -ne 0 ]; then

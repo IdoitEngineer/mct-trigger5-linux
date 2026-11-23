@@ -71,6 +71,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
+#define DRIVER_PATCHLEVEL      1
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -297,6 +298,7 @@ static const struct drm_driver trigger5_drm_driver = {
        .desc = DRIVER_DESC,
        .major = DRIVER_MAJOR,
        .minor = DRIVER_MINOR,
+       .patchlevel = DRIVER_PATCHLEVEL,
 };
 
 static const struct drm_mode_config_funcs trigger5_mode_config_funcs = {

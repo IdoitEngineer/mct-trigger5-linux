@@ -23,7 +23,7 @@ the vendor binaries are proprietary and not covered — see
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
 | `windows-RE-trigger/` | Local Ghidra reverse-engineering export of the vendor Windows driver pair (proprietary; not covered by the project licence). |
-| `trigger5-dkms_1.0_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.1_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -32,7 +32,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20.
-- Driver installed via DKMS as `trigger5/1.0`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.1`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; rotated frames are
   converted in the driver and sent as full-frame updates.
@@ -93,9 +93,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0_all.deb
-../trigger5_1.0_amd64.changes
-../trigger5_1.0_amd64.buildinfo
+../trigger5-dkms_1.0.1_all.deb
+../trigger5_1.0.1_amd64.changes
+../trigger5_1.0.1_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -108,9 +108,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0_all.deb
+sudo apt install ./trigger5-dkms_1.0.1_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0_all.deb
+sudo dpkg -i trigger5-dkms_1.0.1_all.deb
 ```
 
 Typical end-to-end:
@@ -118,7 +118,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0_all.deb
+sudo apt install ../trigger5-dkms_1.0.1_all.deb
 sudo reboot
 ```
 
@@ -320,7 +320,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.1`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -619,7 +619,7 @@ runners:
 | Garbled / stale picture after rotation | Native rotation sends full frames. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.1_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 
