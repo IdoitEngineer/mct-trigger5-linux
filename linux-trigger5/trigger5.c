@@ -1625,15 +1625,15 @@ static ssize_t default_modes_show(struct device *dev,
 	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
 		count = (trigger5->default_modes_len - 4) / 8;
 
-	n += sysfs_emit(buf + n, "count %u\n", count);
+	n = sysfs_emit(buf, "count %u\n", count);
 	for (i = 0; i < count; i++) {
 		const u8 *entry = trigger5->default_modes + 4 + i * 8;
 		u16 height = entry[4] | (entry[5] << 8);
 		u16 width = entry[6] | (entry[7] << 8);
 
-		n += sysfs_emit(buf + n, "%u %u %u %u %u %u\n",
-				entry[3], width, height,
-				entry[0], entry[1], entry[2]);
+		n += sysfs_emit_at(buf, n, "%u %u %u %u %u %u\n",
+				   entry[3], width, height,
+				   entry[0], entry[1], entry[2]);
 	}
 
 	return n;
