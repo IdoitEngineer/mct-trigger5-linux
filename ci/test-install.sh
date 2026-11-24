@@ -39,9 +39,9 @@ echo "installing $deb"
 dpkg -i "$deb"
 
 echo "building for $kver"
-dkms add -m trigger5 -v 1.0.4 2>/dev/null || true
-dkms build -m trigger5 -v 1.0.4 -k "$kver"
-dkms install -m trigger5 -v 1.0.4 -k "$kver" --force
+dkms add -m trigger5 -v 1.0.5 2>/dev/null || true
+dkms build -m trigger5 -v 1.0.5 -k "$kver"
+dkms install -m trigger5 -v 1.0.5 -k "$kver" --force
 
 echo "verifying"
 modfile=$(ls -1 "/lib/modules/$kver/updates/dkms/trigger5.ko"* 2>/dev/null | head -n1 || true)
@@ -50,7 +50,7 @@ if [ -z "$modfile" ]; then
 	exit 1
 fi
 modinfo "$modfile" | sed -n '1,8p'
-dkms status -m trigger5 -v 1.0.4 -k "$kver"
+dkms status -m trigger5 -v 1.0.5 -k "$kver"
 
 # The container only has headers, not the kernel modules package, so depmod
 # may not create modules.dep here. The explicit-file check above is the

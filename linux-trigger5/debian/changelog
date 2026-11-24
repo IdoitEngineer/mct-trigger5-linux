@@ -1,3 +1,11 @@
+trigger5 (1.0.5) unstable; urgency=medium
+
+  * Send partial damage updates under plane rotation.  Each framebuffer
+    damage clip is mapped into panel space, aligned to 4 pixels there, and
+    coalesced with overlapping or vertically adjacent clips before sending.
+
+ -- Jeringa <jeringa@example.com>  Tue, 24 Nov 2026 10:00:00 +1300
+
 trigger5 (1.0.4) unstable; urgency=medium
 
   * Send landscape partial updates per damage clip instead of one merged

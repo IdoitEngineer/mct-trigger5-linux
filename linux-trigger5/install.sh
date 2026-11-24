@@ -5,7 +5,7 @@
 # Install the MCT Trigger 5 DRM driver via DKMS (Devuan / Debian, no systemd needed).
 set -eu
 
-VERSION=1.0.4
+VERSION=1.0.5
 MODULE=trigger5
 
 if [ "$(id -u)" -ne 0 ]; then
