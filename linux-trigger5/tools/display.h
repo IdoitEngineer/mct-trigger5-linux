@@ -31,6 +31,17 @@ struct display {
 	drmModeModeInfo mode;
 };
 
+#define DISPLAY_MAX_DEVICE_MODES 64
+
+struct display_mode_entry {
+	unsigned int index;
+	unsigned int width;
+	unsigned int height;
+	unsigned int refresh;
+	unsigned int timing;
+	unsigned int bpp;
+};
+
 struct dumb_fb {
 	uint32_t handle;
 	uint32_t fb_id;
@@ -45,6 +56,10 @@ int display_open(struct display *d, bool need_master);
 void display_close(struct display *d);
 
 int display_parse_mode(struct display *d, const char *spec);
+int display_parse_device_mode(struct display *d, const char *spec);
+int display_read_default_modes(const char *card,
+			       struct display_mode_entry *modes, int max);
+void display_list_modes(struct display *d);
 void display_print(struct display *d);
 
 int dumb_fb_create(struct display *d, struct dumb_fb *fb, uint32_t width,

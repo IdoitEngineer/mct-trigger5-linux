@@ -10,6 +10,9 @@ version follows the same `major.minor.patch` values.
 
 - `trigger5-tool probe`: print the adapter's own `0xA4` supported-mode table as
   "device default modes" after the monitor EDID modes, including JSON output.
+- `trigger5-tool test --list-modes` prints the monitor and adapter mode lists;
+  `--device-mode N|WxH[@R]` forces an adapter-table entry using monitor, CEA or
+  CVT timings.
 - Driver: read the `0xA4` table once at probe and expose it read-only as
   `default_modes` on the card device's sysfs node.
 - `VERSION` file and `scripts/bump-version.sh` to update the driver, DKMS,

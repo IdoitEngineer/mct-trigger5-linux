@@ -93,11 +93,19 @@ Animated portrait runs use the same per-clip damage path as landscape: the
 driver maps each framebuffer rectangle into panel space and sends only the
 dirty regions.
 
+`--device-mode` forces a mode from the adapter's own supported-mode table even
+when the monitor EDID does not list it. The table only carries resolution and
+refresh; the tool uses the monitor's exact timings when available and
+CEA-861/CVT timings otherwise. Forcing a mode the monitor cannot lock can blank
+the output, so use `--list-modes` first and keep a text console handy.
+
 Other options:
 
 | Option | Meaning |
 |---|---|
-| `--mode WxH` | Use a specific connector mode instead of the preferred one. |
+| `--mode WxH[@R]` | Use a specific monitor EDID mode instead of the preferred one. |
+| `--device-mode N\|WxH[@R]` | Select an entry from the adapter's `0xA4` table by index or resolution. Uses the monitor's timings when it lists the same mode, otherwise CEA/CVT. |
+| `--list-modes` | Print the monitor and device-default mode lists with their indexes. Does not require DRM master. |
 | `--seconds N` | Run for N seconds (default 10). |
 | `--no-animate` | Show a static frame only. |
 | `--full` | Send a full-frame damage rectangle each frame (slow, useful to compare against damage tracking). |

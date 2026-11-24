@@ -101,21 +101,116 @@ static int find_crtc_index(struct display *d, uint32_t crtc_id)
 	return -1;
 }
 
-static void fallback_mode(drmModeModeInfo *mode, int width, int height)
+/*
+ * Generate a mode with the CVT algorithm (the same integer math as the
+ * kernel's drm_cvt_mode(..., reduced=false)).  Used for device-table modes
+ * that the monitor EDID does not already describe.
+ */
+static void cvt_mode(drmModeModeInfo *mode, int hdisplay, int vdisplay,
+		     int vrefresh)
+{
+	const int hv_factor = 1000;
+	const int clock_step = 250;
+	int hdisplay_rnd, vdisplay_rnd, vsync;
+	int hperiod, vsyncandback_porch, hblank;
+	unsigned int hblank_percentage;
+	long long tmp1, tmp2, tmp;
+	int vfieldrate = vrefresh ? vrefresh : 60;
+
+	if (hdisplay <= 0 || vdisplay <= 0)
+		return;
+
+	memset(mode, 0, sizeof(*mode));
+
+	hdisplay_rnd = hdisplay;
+	vdisplay_rnd = vdisplay;
+
+	if (!(vdisplay % 3) && (vdisplay * 4 / 3) == hdisplay)
+		vsync = 4;
+	else if (!(vdisplay % 9) && (vdisplay * 16 / 9) == hdisplay)
+		vsync = 5;
+	else if (!(vdisplay % 10) && (vdisplay * 16 / 10) == hdisplay)
+		vsync = 6;
+	else if (!(vdisplay % 4) && (vdisplay * 5 / 4) == hdisplay)
+		vsync = 7;
+	else if (!(vdisplay % 9) && (vdisplay * 15 / 9) == hdisplay)
+		vsync = 7;
+	else
+		vsync = 10;
+
+	mode->hdisplay = hdisplay_rnd;
+	mode->vdisplay = vdisplay_rnd;
+
+	tmp1 = (long long)hv_factor * 1000000 -
+	       550LL * hv_factor * vfieldrate;
+	tmp2 = (vdisplay_rnd + 3) * 2;
+	hperiod = (int)(tmp1 * 2 / (tmp2 * vfieldrate));
+
+	tmp1 = 550LL * hv_factor / hperiod + 1;
+	if (tmp1 < vsync + 3)
+		vsyncandback_porch = vsync + 3;
+	else
+		vsyncandback_porch = (int)tmp1;
+
+	mode->vtotal = vdisplay_rnd + vsyncandback_porch + 3;
+
+	hblank_percentage = 30 * hv_factor - 300 * hperiod / 1000;
+	if (hblank_percentage < 20 * hv_factor)
+		hblank_percentage = 20 * hv_factor;
+	hblank = mode->hdisplay * hblank_percentage /
+		 (100 * hv_factor - hblank_percentage);
+	hblank -= hblank % 16;
+	mode->htotal = mode->hdisplay + hblank;
+	mode->hsync_end = mode->hdisplay + hblank / 2;
+	mode->hsync_start = mode->hsync_end - (mode->htotal * 8) / 100;
+	mode->hsync_start += 8 - mode->hsync_start % 8;
+	mode->vsync_start = mode->vdisplay + 3;
+	mode->vsync_end = mode->vsync_start + vsync;
+
+	tmp = (long long)mode->htotal * hv_factor * 1000 / hperiod;
+	mode->clock = (int)tmp;
+	mode->clock -= mode->clock % clock_step;
+	mode->vrefresh = vfieldrate;
+	mode->type = DRM_MODE_TYPE_DRIVER;
+	mode->flags = DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NHSYNC;
+	snprintf(mode->name, sizeof(mode->name), "%dx%d", hdisplay, vdisplay);
+}
+
+/* Prefer the CEA-861 timings for the two common HDTV modes. */
+static bool cea_mode(drmModeModeInfo *mode, int width, int height,
+		     int refresh)
 {
 	memset(mode, 0, sizeof(*mode));
-	mode->clock = 148500;
-	mode->hdisplay = width;
-	mode->hsync_start = width + 88;
-	mode->hsync_end = width + 88 + 44;
-	mode->htotal = width + 88 + 44 + 148;
-	mode->vdisplay = height;
-	mode->vsync_start = height + 4;
-	mode->vsync_end = height + 4 + 5;
-	mode->vtotal = height + 4 + 5 + 36;
-	mode->vrefresh = 60;
+
+	if (width == 1280 && height == 720 && refresh == 60) {
+		mode->clock = 74250;
+		mode->hdisplay = 1280;
+		mode->hsync_start = 1390;
+		mode->hsync_end = 1430;
+		mode->htotal = 1650;
+		mode->vdisplay = 720;
+		mode->vsync_start = 725;
+		mode->vsync_end = 730;
+		mode->vtotal = 750;
+	} else if (width == 1920 && height == 1080 && refresh == 60) {
+		mode->clock = 148500;
+		mode->hdisplay = 1920;
+		mode->hsync_start = 2008;
+		mode->hsync_end = 2052;
+		mode->htotal = 2200;
+		mode->vdisplay = 1080;
+		mode->vsync_start = 1084;
+		mode->vsync_end = 1089;
+		mode->vtotal = 1125;
+	} else {
+		return false;
+	}
+
+	mode->vrefresh = refresh;
+	mode->type = DRM_MODE_TYPE_DRIVER;
 	mode->flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC;
 	snprintf(mode->name, sizeof(mode->name), "%dx%d", width, height);
+	return true;
 }
 
 int display_open(struct display *d, bool need_master)
@@ -346,12 +441,182 @@ int display_parse_mode(struct display *d, const char *spec)
 	}
 
 	fprintf(stderr,
-		"mode %dx%d%s not in the connector list, using generic timings\n",
+		"mode %dx%d%s not in the connector list, using standard timings\n",
 		w, h, refresh ? " at the requested refresh" : "");
-	fallback_mode(&d->mode, w, h);
-	if (refresh)
-		d->mode.vrefresh = refresh;
+	if (!cea_mode(&d->mode, w, h, refresh ? refresh : 60))
+		cvt_mode(&d->mode, w, h, refresh ? refresh : 60);
 	return 0;
+}
+
+static const char *card_name(const struct display *d)
+{
+	const char *slash = strrchr(d->path, '/');
+
+	return slash ? slash + 1 : d->path;
+}
+
+/*
+ * Read the driver's cached 0xA4 table from the card device sysfs node:
+ *   count N
+ *   index width height refresh timing bpp
+ */
+int display_read_default_modes(const char *card,
+			       struct display_mode_entry *modes, int max)
+{
+	char path[512], buf[4096];
+	int fd, n, count = 0, header = 0;
+	char *line, *next;
+
+	if (!card || !modes || max <= 0)
+		return 0;
+
+	snprintf(path, sizeof(path), "/sys/class/drm/%s/device/default_modes",
+		 card);
+	fd = open(path, O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+
+	for (line = buf; line && *line; line = next) {
+		unsigned int index, width, height, refresh, timing, bpp;
+
+		next = strchr(line, '\n');
+		if (next)
+			*next++ = '\0';
+
+		if (!header) {
+			header = 1;
+			continue;
+		}
+		if (sscanf(line, "%u %u %u %u %u %u", &index, &width,
+			   &height, &refresh, &timing, &bpp) != 6)
+			continue;
+		if (count >= max)
+			break;
+		modes[count].index = index;
+		modes[count].width = width;
+		modes[count].height = height;
+		modes[count].refresh = refresh;
+		modes[count].timing = timing;
+		modes[count].bpp = bpp;
+		count++;
+	}
+
+	return count;
+}
+
+int display_parse_device_mode(struct display *d, const char *spec)
+{
+	struct display_mode_entry modes[DISPLAY_MAX_DEVICE_MODES];
+	const struct display_mode_entry *entry = NULL;
+	unsigned long index = 0;
+	bool by_index = false;
+	int count, i, w = 0, h = 0, refresh = 0;
+	bool cea;
+
+	count = display_read_default_modes(card_name(d), modes,
+					   DISPLAY_MAX_DEVICE_MODES);
+	if (count <= 0) {
+		fprintf(stderr,
+			"device default modes are not available (driver 1.0.6+ required)\n");
+		return -1;
+	}
+
+	{
+		char *end;
+
+		index = strtoul(spec, &end, 10);
+		if (spec[0] && !*end)
+			by_index = true;
+	}
+	if (!by_index &&
+	    (sscanf(spec, "%dx%d@%d", &w, &h, &refresh) < 2 ||
+	     w <= 0 || h <= 0)) {
+		fprintf(stderr,
+			"invalid device mode '%s' (expected index or WxH[@refresh])\n",
+			spec);
+		return -1;
+	}
+
+	for (i = 0; i < count; i++) {
+		if (by_index) {
+			if (modes[i].index == index) {
+				entry = &modes[i];
+				break;
+			}
+			continue;
+		}
+		if (modes[i].width != (unsigned int)w ||
+		    modes[i].height != (unsigned int)h)
+			continue;
+		if (refresh && modes[i].refresh != (unsigned int)refresh)
+			continue;
+		if (!entry || (!refresh && modes[i].refresh == 60))
+			entry = &modes[i];
+		if (!refresh && modes[i].refresh == 60)
+			break;
+	}
+
+	if (!entry) {
+		fprintf(stderr,
+			"device mode '%s' is not in the 0xA4 table; use --list-modes\n",
+			spec);
+		return -1;
+	}
+
+	/* The monitor's exact timings are better than a synthesized modeline. */
+	for (i = 0; i < d->conn->count_modes; i++) {
+		drmModeModeInfo *m = &d->conn->modes[i];
+
+		if (m->hdisplay == (int)entry->width &&
+		    m->vdisplay == (int)entry->height &&
+		    m->vrefresh == entry->refresh) {
+			d->mode = *m;
+			printf("selected device mode [%u] %ux%u@%u using monitor timings\n",
+			       entry->index, entry->width, entry->height,
+			       entry->refresh);
+			return 0;
+		}
+	}
+
+	cea = cea_mode(&d->mode, entry->width, entry->height, entry->refresh);
+	if (!cea)
+		cvt_mode(&d->mode, entry->width, entry->height, entry->refresh);
+	printf("selected device mode [%u] %ux%u@%u using %s timings\n",
+	       entry->index, entry->width, entry->height, entry->refresh,
+	       cea ? "CEA" : "CVT");
+	return 0;
+}
+
+void display_list_modes(struct display *d)
+{
+	struct display_mode_entry modes[DISPLAY_MAX_DEVICE_MODES];
+	int count, i;
+
+	printf("monitor modes (%d):\n", d->conn->count_modes);
+	for (i = 0; i < d->conn->count_modes; i++) {
+		drmModeModeInfo *m = &d->conn->modes[i];
+
+		printf("  [%2d] %-16s %ux%u@%u%s\n", i, m->name,
+		       m->hdisplay, m->vdisplay, m->vrefresh,
+		       i ? "" : " (preferred)");
+	}
+
+	count = display_read_default_modes(card_name(d), modes,
+					   DISPLAY_MAX_DEVICE_MODES);
+	if (count <= 0) {
+		printf("device default modes: not available\n");
+		return;
+	}
+	printf("device default modes (%d):\n", count);
+	for (i = 0; i < count; i++)
+		printf("  [%3u] %ux%u@%u timing=%u bpp=%u\n",
+		       modes[i].index, modes[i].width, modes[i].height,
+		       modes[i].refresh, modes[i].timing, modes[i].bpp);
 }
 
 
