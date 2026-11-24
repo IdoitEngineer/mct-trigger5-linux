@@ -1,3 +1,10 @@
+trigger5 (1.0.6) unstable; urgency=medium
+
+  * Add the adapter 0xA4 default mode table to probe output, add the VERSION
+    bump script, and remove the in-tree local patch.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Tue, 24 Nov 2026 18:30:32 +1300
+
 trigger5 (1.0.5) unstable; urgency=medium
 
   * Send partial damage updates under plane rotation.  Each framebuffer

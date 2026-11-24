@@ -25,6 +25,15 @@
 #define TRIGGER5_VID 0x0711
 #define TRIGGER5_PID 0x5805
 
+struct mode_entry {
+	unsigned int index;
+	unsigned int width;
+	unsigned int height;
+	unsigned int refresh;
+	unsigned int timing;
+	unsigned int bpp;
+};
+
 struct edid_info {
 	int valid;
 	char manufacturer[4];
@@ -242,6 +251,57 @@ static void parse_edid(const unsigned char *buf, size_t len,
 	}
 
 	info->valid = 1;
+}
+
+#define MAX_DEFAULT_MODES 32
+
+/*
+ * The driver exposes the adapter's 0xA4 supported-mode table as text:
+ *   count N
+ *   index width height refresh timing bpp
+ * A missing attribute or an empty table yields zero entries.
+ */
+static int read_default_modes(const char *card, struct mode_entry *modes,
+			      int max)
+{
+	char path[512], buf[4096];
+	ssize_t n;
+	char *line, *next;
+	int count = 0;
+	int header = 0;
+
+	snprintf(path, sizeof(path), "/sys/class/drm/%s/device/default_modes",
+		 card);
+	n = read_path(path, buf, sizeof(buf));
+	if (n <= 0)
+		return 0;
+
+	for (line = buf; line && *line; line = next) {
+		unsigned int index, width, height, refresh, timing, bpp;
+
+		next = strchr(line, '\n');
+		if (next)
+			*next++ = '\0';
+
+		if (!header) {
+			header = 1;
+			continue;
+		}
+		if (sscanf(line, "%u %u %u %u %u %u", &index, &width,
+			   &height, &refresh, &timing, &bpp) != 6)
+			continue;
+		if (count >= max)
+			break;
+		modes[count].index = index;
+		modes[count].width = width;
+		modes[count].height = height;
+		modes[count].refresh = refresh;
+		modes[count].timing = timing;
+		modes[count].bpp = bpp;
+		count++;
+	}
+
+	return count;
 }
 
 static int read_edid(const char *card, const drmModeConnector *conn,
@@ -694,7 +754,9 @@ static void probe_drm_card(int card_index, const char *path, bool json)
 		const char *type;
 		unsigned char edid[4096];
 		struct edid_info info;
+		struct mode_entry default_modes[MAX_DEFAULT_MODES];
 		int edid_len;
+		int default_count;
 
 		if (!conn)
 			continue;
@@ -703,6 +765,8 @@ static void probe_drm_card(int card_index, const char *path, bool json)
 			type = "Unknown";
 		edid_len = read_edid(card, conn, edid, sizeof(edid));
 		parse_edid(edid, edid_len > 0 ? (size_t)edid_len : 0, &info);
+		default_count = read_default_modes(card, default_modes,
+						   MAX_DEFAULT_MODES);
 
 		if (json) {
 			printf("%s{\"id\": %u, \"type\": ", i ? "," : "",
@@ -740,6 +804,17 @@ static void probe_drm_card(int card_index, const char *path, bool json)
 			} else {
 				printf("null");
 			}
+			printf(", \"device_default_modes\": [");
+			for (int d = 0; d < default_count; d++)
+				printf("%s{\"index\": %u, \"width\": %u, \"height\": %u, \"refresh\": %u, \"timing\": %u, \"bpp\": %u}",
+				       d ? "," : "",
+				       default_modes[d].index,
+				       default_modes[d].width,
+				       default_modes[d].height,
+				       default_modes[d].refresh,
+				       default_modes[d].timing,
+				       default_modes[d].bpp);
+			printf("]");
 			printf("}");
 		} else {
 			printf("  connector %u (%s-%u): %s, %ux%u mm\n",
@@ -765,6 +840,18 @@ static void probe_drm_card(int card_index, const char *path, bool json)
 				       conn->modes[m].vdisplay,
 				       conn->modes[m].vrefresh,
 				       m ? "" : " (preferred)");
+			if (default_count > 0) {
+				printf("    device default modes (0xA4, %d):\n",
+				       default_count);
+				for (int d = 0; d < default_count; d++)
+					printf("      mode %ux%u@%u  index %u\n",
+					       default_modes[d].width,
+					       default_modes[d].height,
+					       default_modes[d].refresh,
+					       default_modes[d].index);
+			} else {
+				printf("    device default modes: not available\n");
+			}
 		}
 		drmModeFreeConnector(conn);
 	}

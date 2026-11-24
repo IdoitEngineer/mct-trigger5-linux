@@ -38,11 +38,15 @@ Read-only and safe to run while X is active. It reports:
   week/year, EDID revision, physical size, monitor name/serial), CRTCs, and
   every plane with its formats and properties (rotation, blend mode, damage
   clips, zpos, ...).
+- **Adapter default modes**: the driver's cached `0xA4` supported-mode table,
+  read from `/sys/class/drm/cardN/device/default_modes` and printed after the
+  monitor EDID modes.
 - **DRM sysfs**: `status`, `enabled` and `dpms` for each card output.
 
 The tool never issues vendor control requests (`0xA1`, `0xA4`, `0xA7`,
 `0xC8`). Those are owned by the kernel driver; the tool only uses the DRM
-interfaces the driver exposes.
+interfaces the driver exposes. The `0xA4` table reaches the probe through the
+driver's read-only sysfs cache.
 
 ### `test`
 

@@ -656,10 +656,11 @@ int display_restore(struct display *d)
 				     DRM_MODE_ROTATE_0, false);
 	}
 
-	if (ret)
+	if (ret) {
 		fprintf(stderr, "restore: could not restore the original CRTC state\n");
-
-	d->mode_set = false;
+	} else {
+		d->mode_set = false;
+	}
 	return ret;
 }
 

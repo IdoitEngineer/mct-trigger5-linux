@@ -1,8 +1,12 @@
 # Issue tracker: GitLab
 
 Issues and specs for this repo live as GitLab issues in
-`gitlab.example.com/jeringa/mct-trigger5-linux`. Use the
-[`glab`](https://gitlab.com/gitlab-org/cli) CLI for all operations.
+`gitlab.example.com/jeringa/mct-trigger5-linux`.
+
+Use the GitLab REST API with the project token in `.git-token` (never print
+it) rather than `glab`; the `glab` token in this environment may be stale. The
+commands below are shown with `glab` for reference, but `curl` with
+`PRIVATE-TOKEN` against `/api/v4/projects/:id/...` is the supported path.
 
 ## Conventions
 

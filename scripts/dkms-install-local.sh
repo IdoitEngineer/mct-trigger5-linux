@@ -15,6 +15,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 src="$root/linux-trigger5"
 
+version=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$src/dkms.conf")
+[ -n "$version" ] || {
+	echo "cannot determine version from $src/dkms.conf" >&2
+	exit 1
+}
+
 min=$(sed -n 's/^BUILD_EXCLUSIVE_KERNEL_MIN="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' \
 	"$src/dkms.conf" | tail -n1)
 [ -n "$min" ] || min=0
@@ -38,12 +44,12 @@ version_ge() {
 	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
-if ! dkms status -m trigger5 -v 1.0.5 2>/dev/null | grep -q .; then
-	if [ -d /usr/src/trigger5-1.0.5 ]; then
-		echo "Registering DKMS source from /usr/src/trigger5-1.0.5"
-		[ "$dry_run" -eq 1 ] || dkms add -m trigger5 -v 1.0.5
+if ! dkms status -m trigger5 -v "$version" 2>/dev/null | grep -q .; then
+	if [ -d "/usr/src/trigger5-$version" ]; then
+		echo "Registering DKMS source from /usr/src/trigger5-$version"
+		[ "$dry_run" -eq 1 ] || dkms add -m trigger5 -v "$version"
 	else
-		echo "trigger5/1.0.5 is not registered." >&2
+		echo "trigger5/$version is not registered." >&2
 		echo "Run 'sudo ./install.sh' or install trigger5-dkms first." >&2
 		exit 1
 	fi
@@ -71,14 +77,14 @@ for kdir in /lib/modules/*; do
 		continue
 	fi
 
-	status=$(dkms status -m trigger5 -v 1.0.5 -k "$ver" 2>/dev/null || true)
+	status=$(dkms status -m trigger5 -v "$version" -k "$ver" 2>/dev/null || true)
 	if [ "$force" -eq 0 ] && printf '%s' "$status" | grep -q ': installed'; then
 		printf '%-32s %s\n' "$ver" "already installed"
 		skipped=$((skipped + 1))
 		continue
 	fi
 
-	cmd=(dkms install -m trigger5 -v 1.0.5 -k "$ver")
+	cmd=(dkms install -m trigger5 -v "$version" -k "$ver")
 	[ "$force" -eq 1 ] && cmd+=(--force)
 
 	if [ "$dry_run" -eq 1 ]; then

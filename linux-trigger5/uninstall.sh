@@ -5,8 +5,13 @@
 # Remove the MCT Trigger 5 DRM driver installed by install.sh.
 set -eu
 
-VERSION=1.0.5
 MODULE=trigger5
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+VERSION=$(sed -n 's/^PACKAGE_VERSION="\(.*\)"/\1/p' "$SCRIPT_DIR/dkms.conf")
+[ -n "$VERSION" ] || {
+	echo "cannot determine version from $SCRIPT_DIR/dkms.conf" >&2
+	exit 1
+}
 
 if [ "$(id -u)" -ne 0 ]; then
 	echo "Please run this script with sudo." >&2

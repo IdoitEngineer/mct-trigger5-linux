@@ -196,6 +196,12 @@ index  mode        refresh
 All are landscape; there is no portrait entry. `index` is a table ID, not a
 sequence number.
 
+The Linux driver reads this table once during probe, while the bulk stream is
+stopped, and exposes the cached text form at
+`/sys/class/drm/cardN/device/default_modes`. `trigger5-tool probe` prints it as
+“device default modes”. It is informational: the monitor EDID remains the
+authoritative mode source.
+
 ### Capability word (0xA7)
 
 Read-only 4-byte little-endian value. The Windows driver queries it when the
@@ -248,6 +254,12 @@ RGB888 data.
 - Up to 8 URBs are kept in flight, round-robin. The driver waits for the
   oldest to complete before reusing it; a 2 s timeout latches `needs_reset`
   and stops I/O. It does **not** issue a USB port reset.
+- A partial update's `horizontal_offset` and `width` must be 4-pixel aligned;
+  1- and 2-pixel alignment corrupts the panel. The driver expands each damage
+  rectangle outwards to that boundary before sending it.
+- The driver may send several header-plus-payload sequences in one atomic
+  commit, one per damage rectangle. Overlapping and vertically adjacent
+  rectangles are coalesced first.
 
 ### Cursor packets (type 2)
 

@@ -1,3 +1,3 @@
-trigger5.c usr/src/trigger5-1.0.5
-Makefile usr/src/trigger5-1.0.5
-dkms.conf usr/src/trigger5-1.0.5
+trigger5.c usr/src/trigger5-1.0.6
+Makefile usr/src/trigger5-1.0.6
+dkms.conf usr/src/trigger5-1.0.6

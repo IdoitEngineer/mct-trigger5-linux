@@ -8,6 +8,7 @@ stages:
   - lint
   - build
   - test
+  - release
 
 variables:
   DEBIAN_FRONTEND: noninteractive
@@ -92,3 +93,37 @@ build:ubuntu-7.3:
     - apt-get install -y -qq build-essential dkms kmod linux-headers-generic >/dev/null
   script:
     - ci/build-module.sh "$CI_PROJECT_DIR"
+
+# Tag-only release jobs. The .deb is built by lint:debian, stored permanently
+# in the generic Package Registry, and linked from the GitLab Release.
+publish:package:
+  stage: release
+  image: debian:trixie
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: lint:debian
+      artifacts: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq curl ca-certificates >/dev/null
+  script: |
+    version="${CI_COMMIT_TAG#v}"
+    deb="trigger5-dkms_${version}_all.deb"
+    test -f "$deb"
+    url="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/trigger5/${CI_COMMIT_TAG}/${deb}"
+    curl --fail --silent --show-error --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$deb" "$url"
+    echo "published $url"
+
+publish:release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  needs:
+    - job: publish:package
+  script: |
+    version="${CI_COMMIT_TAG#v}"
+    deb="trigger5-dkms_${version}_all.deb"
+    url="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/trigger5/${CI_COMMIT_TAG}/${deb}"
+    release-cli create --name "trigger5 ${CI_COMMIT_TAG}" --tag-name "${CI_COMMIT_TAG}" --description "DKMS package for ${CI_COMMIT_TAG}. See CHANGELOG.md." --assets-link "{\"name\":\"${deb}\",\"url\":\"${url}\"}"

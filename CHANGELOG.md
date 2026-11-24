@@ -4,6 +4,34 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.6] - 2026-11-24
+
+### Added
+
+- `trigger5-tool probe`: print the adapter's own `0xA4` supported-mode table as
+  "device default modes" after the monitor EDID modes, including JSON output.
+- Driver: read the `0xA4` table once at probe and expose it read-only as
+  `default_modes` on the card device's sysfs node.
+- `VERSION` file and `scripts/bump-version.sh` to update the driver, DKMS,
+  Debian and documentation version strings in one step.
+
+### Changed
+
+- Removed `linux-trigger5/trigger5-local.patch`; the tree is maintained
+  directly and the local changes are documented in the READMEs.
+- `ci/test-install.sh`, `scripts/dkms-install-local.sh`, `install.sh` and
+  `uninstall.sh` now derive the version instead of hard-coding it.
+- Documentation describes per-clip rotation damage and the measured bandwidth
+  (2–4 Mbit/s damaged vs 12–18 Mbit/s full-frame).
+- Tag pipelines publish the `.deb` to the generic Package Registry and attach
+  it to a GitLab Release.
+
+### Fixed
+
+- `trigger5-tool` retries `display_restore()` once and leaves the test
+  framebuffer allocated if the restore still fails, instead of tearing down a
+  framebuffer the CRTC may still scan out.
+
 ## [1.0.5] - 2026-11-24
 
 ### Added
@@ -120,7 +148,7 @@ version follows the same `major.minor.patch` values.
   accepted but the panel stays blank; the Windows driver uses compressed
   frames (`flags=0x71`) there, while Linux sends raw RGB888 (`flags=0x01`).
 - `trigger5-tool` still destroys the test framebuffer if `display_restore()`
-  fails.
+  fails. Fixed in 1.0.6.
 
 ## [1.0.0] - 2026-11-20
 
