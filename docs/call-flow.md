@@ -232,9 +232,8 @@ visible cursor is uploaded through bulk packets with counter type 2:
 
 The extracted bitmap is a simple arrow. The Linux driver now uploads the
 64×64 bitmap and sends commands 0/3/5 as well; hardware verification is
-verified at 1920×1080. See
-[`../windows-RE-trigger/CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md)
-for the packet format and the extracted image.
+verified at 1920×1080. See the private cursor packet notes (not shipped) for
+the packet format and the extracted image.
 
 ## 7. `trigger5-tool` path
 
@@ -302,7 +301,7 @@ failed with `ENOSPC` after a rotated test.
   a proprietary `EvoEncode` encoded-frame path (`flags=0x71` observed); it is
   not implemented or decoded here. Trigger 6's JPEG path is different.
 - The cursor bulk type-2 bitmap/show/hide path is implemented and verified at
-  1920×1080. The Windows bitmap and show/hide sequence are documented in
-  `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
+  1920×1080. The Windows bitmap and show/hide sequence are documented in the
+  private cursor packet notes (not shipped).
 - `trigger5-tool` portrait modes now draw the canvas in framebuffer
   orientation; the driver's plane rotation produces the visible rotation.

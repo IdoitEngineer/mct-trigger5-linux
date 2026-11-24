@@ -1324,6 +1324,23 @@ static const u32 trigger5_cursor_formats[] = {
 	DRM_FORMAT_ARGB8888,
 };
 
+/* Number of valid 8-byte entries in the cached 0xA4 table. */
+static unsigned int
+trigger5_default_modes_count(struct trigger5_device *trigger5)
+{
+	unsigned int count;
+
+	if (trigger5->default_modes_len < 4)
+		return 0;
+
+	count = (trigger5->default_modes[0] << 8) |
+		trigger5->default_modes[1];
+	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
+		count = (trigger5->default_modes_len - 4) / 8;
+
+	return count;
+}
+
 /*
  * Whether the monitor EDID already provides this mode.  EDID modes keep the
  * proven custom 0xC3 path; only forced device-table modes use wValue=index.
@@ -1355,13 +1372,9 @@ static u16 trigger5_default_mode_index(struct trigger5_device *trigger5,
 	unsigned int count, i;
 	int refresh;
 
-	if (trigger5->default_modes_len < 4)
+	count = trigger5_default_modes_count(trigger5);
+	if (!count)
 		return 0;
-
-	count = (trigger5->default_modes[0] << 8) |
-		trigger5->default_modes[1];
-	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
-		count = (trigger5->default_modes_len - 4) / 8;
 
 	refresh = drm_mode_vrefresh(mode);
 	for (i = 0; i < count; i++) {
@@ -1690,13 +1703,12 @@ static ssize_t default_modes_show(struct device *dev,
 	unsigned int count, i;
 	ssize_t n = 0;
 
-	if (!trigger5 || trigger5->default_modes_len < 4)
+	if (!trigger5)
 		return sysfs_emit(buf, "count 0\n");
 
-	count = (trigger5->default_modes[0] << 8) |
-		trigger5->default_modes[1];
-	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
-		count = (trigger5->default_modes_len - 4) / 8;
+	count = trigger5_default_modes_count(trigger5);
+	if (!count)
+		return sysfs_emit(buf, "count 0\n");
 
 	n = sysfs_emit(buf, "count %u\n", count);
 	for (i = 0; i < count; i++) {
@@ -1728,7 +1740,6 @@ static const struct attribute_group trigger5_default_modes_group = {
  * returns corrupt control replies then, which the DRM EDID parser rejects
  * ("checksum is invalid") and the connector loses its mode list.
  */
-
 static const struct drm_edid *
 trigger5_get_cached_edid(struct trigger5_device *trigger5)
 {

@@ -11,7 +11,15 @@ version follows the same `major.minor.patch` values.
 - Corrected the 1024×768 status and the compression description: Linux sends
   raw RGB888; the Windows Trigger 5 driver has a proprietary `EvoEncode`
   encoded-frame path that is not implemented here.
+- Corrected the README rotation status text to describe partial damage frames.
+- Agent documentation now requires `--no-follow-tags` for branch pushes and
+  uses the project token for GitLab API access.
 
+### Fixed
+
+- `scripts/bump-version.sh` now updates `DRIVER_MAJOR` and `DRIVER_MINOR` as
+  well as the patch level, and preserves the mode of the files it edits.
+- Maintainer scripts keep their executable bits.
 ## [1.0.6] - 2026-11-24
 
 ### Added
@@ -136,8 +144,8 @@ version follows the same `major.minor.patch` values.
   - bitmap cached by DRM framebuffer ID.
 - `docs/call-flow.md`: X11/tool → DRM/KMS → driver → USB → panel call and data
   flow.
-- Reverse-engineering export of the vendor Windows driver in the separate
-  `windows-RE-trigger` repository, including function maps, reconstructed
+- Reverse-engineering export of the vendor Windows driver in a separate
+  private repository (not shipped), including function maps, reconstructed
   protocol paths and extracted cursor bitmaps.
 - `AGENTS.md` and engineering-skill configuration for future sessions.
 

@@ -93,9 +93,9 @@ error exceeds 10 000 ppm (1 %).
 
 The visible Windows cursor is a **64×64 ARGB bitmap uploaded over bulk OUT**,
 not a fixed hardware image. The `0xC8` control requests are a secondary path;
-the bitmap/show/hide packets are what make the cursor appear. See
-[`CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md) for
-the captured packet format, commands and the extracted bitmap.
+the bitmap/show/hide packets are what make the cursor appear. See the private
+`CURSOR-BULK-PACKETS.md` notes (not shipped) for the captured packet format,
+commands and the extracted bitmap.
 
 Control path, used by both Windows and the Linux driver:
 
@@ -277,8 +277,8 @@ nibble of the 32-bit field at offset 12:
 | 17 | extra | shape/format identifier (`0x10` arrow upload, `0x31` I-beam upload, `0x00`/`0x21` show) |
 | 20… | payload | 64×64 ARGB (16384 bytes) for command 0 |
 
-Full examples and the extracted bitmap are in
-[`CURSOR-BULK-PACKETS.md`](../windows-RE-trigger/CURSOR-BULK-PACKETS.md).
+Full examples and the extracted bitmap are in the private
+`CURSOR-BULK-PACKETS.md` notes (not shipped).
 
 ### Frame buffer model
 
