@@ -1,3 +1,11 @@
+trigger5 (1.0.4) unstable; urgency=medium
+
+  * Send landscape partial updates per damage clip instead of one merged
+    bounding rectangle.  Overlapping and vertically adjacent clips are
+    coalesced first.
+
+ -- Jeringa <jeringa@example.com>  Mon, 23 Nov 2026 22:00:00 +1300
+
 trigger5 (1.0.3) unstable; urgency=medium
 
   * Align partial-update damage rectangles to 4 pixels in the driver.  The

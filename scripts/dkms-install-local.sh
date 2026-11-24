@@ -38,12 +38,12 @@ version_ge() {
 	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
-if ! dkms status -m trigger5 -v 1.0.3 2>/dev/null | grep -q .; then
-	if [ -d /usr/src/trigger5-1.0.3 ]; then
-		echo "Registering DKMS source from /usr/src/trigger5-1.0.3"
-		[ "$dry_run" -eq 1 ] || dkms add -m trigger5 -v 1.0.3
+if ! dkms status -m trigger5 -v 1.0.4 2>/dev/null | grep -q .; then
+	if [ -d /usr/src/trigger5-1.0.4 ]; then
+		echo "Registering DKMS source from /usr/src/trigger5-1.0.4"
+		[ "$dry_run" -eq 1 ] || dkms add -m trigger5 -v 1.0.4
 	else
-		echo "trigger5/1.0.3 is not registered." >&2
+		echo "trigger5/1.0.4 is not registered." >&2
 		echo "Run 'sudo ./install.sh' or install trigger5-dkms first." >&2
 		exit 1
 	fi
@@ -71,14 +71,14 @@ for kdir in /lib/modules/*; do
 		continue
 	fi
 
-	status=$(dkms status -m trigger5 -v 1.0.3 -k "$ver" 2>/dev/null || true)
+	status=$(dkms status -m trigger5 -v 1.0.4 -k "$ver" 2>/dev/null || true)
 	if [ "$force" -eq 0 ] && printf '%s' "$status" | grep -q ': installed'; then
 		printf '%-32s %s\n' "$ver" "already installed"
 		skipped=$((skipped + 1))
 		continue
 	fi
 
-	cmd=(dkms install -m trigger5 -v 1.0.3 -k "$ver")
+	cmd=(dkms install -m trigger5 -v 1.0.4 -k "$ver")
 	[ "$force" -eq 1 ] && cmd+=(--force)
 
 	if [ "$dry_run" -eq 1 ]; then
