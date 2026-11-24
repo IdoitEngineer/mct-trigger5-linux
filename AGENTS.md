@@ -14,6 +14,7 @@
 - `master` is the only branch and tracks `origin/master`; use a feature branch for larger work.
 - **ALWAYS ask before any `git push`.** Never treat a previous approval as standing permission for a later push, and never disable or override this rule.
 - Do not force-push. Use `--force` only when explicitly requested.
+- Push branches with `git push --no-follow-tags`; tag pushes trigger the Package Registry/Release jobs.
 - Never commit build artefacts (`*.ko`, `*.o`, `.deb`, `linux-trigger5/tools/trigger5-tool`); `.gitignore` covers most.
 - Never hand-edit the current version. Run `scripts/bump-version.sh X.Y.Z`; `VERSION` is the source of truth and `dkms.conf`, the Debian files and `DRIVER_PATCHLEVEL` must match it.
 - Keep `SPDX-License-Identifier: GPL-2.0-only` headers. Vendor binaries are proprietary and untracked.
