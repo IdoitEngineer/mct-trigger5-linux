@@ -213,6 +213,16 @@ static bool cea_mode(drmModeModeInfo *mode, int width, int height,
 	return true;
 }
 
+/* Prefer CEA timings; fall back to CVT for other resolutions. */
+static bool synthesize_mode(drmModeModeInfo *mode, int width, int height,
+			    int refresh)
+{
+	if (cea_mode(mode, width, height, refresh))
+		return true;
+	cvt_mode(mode, width, height, refresh);
+	return false;
+}
+
 int display_open(struct display *d, bool need_master)
 {
 	drmModeEncoder *enc = NULL;
@@ -443,8 +453,7 @@ int display_parse_mode(struct display *d, const char *spec)
 	fprintf(stderr,
 		"mode %dx%d%s not in the connector list, using standard timings\n",
 		w, h, refresh ? " at the requested refresh" : "");
-	if (!cea_mode(&d->mode, w, h, refresh ? refresh : 60))
-		cvt_mode(&d->mode, w, h, refresh ? refresh : 60);
+	synthesize_mode(&d->mode, w, h, refresh ? refresh : 60);
 	return 0;
 }
 
@@ -464,7 +473,7 @@ int display_read_default_modes(const char *card,
 			       struct display_mode_entry *modes, int max)
 {
 	char path[512], buf[4096];
-	int fd, n, count = 0, header = 0;
+	int fd, n, count = 0, seen_header = 0;
 	char *line, *next;
 
 	if (!card || !modes || max <= 0)
@@ -488,8 +497,8 @@ int display_read_default_modes(const char *card,
 		if (next)
 			*next++ = '\0';
 
-		if (!header) {
-			header = 1;
+		if (!seen_header) {
+			seen_header = 1;
 			continue;
 		}
 		if (sscanf(line, "%u %u %u %u %u %u", &index, &width,
@@ -583,9 +592,8 @@ int display_parse_device_mode(struct display *d, const char *spec)
 		}
 	}
 
-	cea = cea_mode(&d->mode, entry->width, entry->height, entry->refresh);
-	if (!cea)
-		cvt_mode(&d->mode, entry->width, entry->height, entry->refresh);
+	cea = synthesize_mode(&d->mode, entry->width, entry->height,
+			      entry->refresh);
 	printf("selected device mode [%u] %ux%u@%u using %s timings\n",
 	       entry->index, entry->width, entry->height, entry->refresh,
 	       cea ? "CEA" : "CVT");

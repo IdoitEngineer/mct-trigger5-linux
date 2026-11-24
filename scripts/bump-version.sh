@@ -49,6 +49,9 @@ if [ "$old" = "$new" ]; then
 	echo "already at $new"
 	exit 0
 fi
+major=${new%%.*}
+rest=${new#*.}
+minor=${rest%%.*}
 patch=${new##*.}
 
 if [ "$dry_run" -eq 0 ] && ! git -C "$root" diff --quiet; then
@@ -71,6 +74,7 @@ update()
 		echo "would update ${file#"$root"/}"
 		rm -f "$tmp"
 	else
+		chmod --reference="$file" "$tmp"
 		mv "$tmp" "$file"
 		echo "updated ${file#"$root"/}"
 	fi
@@ -78,6 +82,8 @@ update()
 
 update "$version_file" "s/^[0-9]+\.[0-9]+\.[0-9]+$/$new/"
 update "$dkms_conf" "s/^PACKAGE_VERSION=.*/PACKAGE_VERSION=\"$new\"/"
+update "$driver" "s/^#define DRIVER_MAJOR[[:space:]]+[0-9]+/#define DRIVER_MAJOR           $major/"
+update "$driver" "s/^#define DRIVER_MINOR[[:space:]]+[0-9]+/#define DRIVER_MINOR           $minor/"
 update "$driver" "s/^#define DRIVER_PATCHLEVEL[[:space:]]+[0-9]+/#define DRIVER_PATCHLEVEL      $patch/"
 update "$debian/trigger5-dkms.install" "s#usr/src/trigger5-[0-9][0-9.]*#usr/src/trigger5-$new#g"
 update "$debian/trigger5-dkms.postinst" "s/^VERSION=.*/VERSION=$new/"

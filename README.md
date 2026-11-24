@@ -35,8 +35,9 @@ Vendor installers are not kept in this repo (they are proprietary); see
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20.
 - Driver installed via DKMS as `trigger5/1.0.6`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
-- Native plane rotation (0/90/180/270) is supported; rotated frames are
-  converted in the driver and sent as full-frame updates.
+- Native plane rotation (0/90/180/270) is supported; damage rectangles are
+  mapped into panel space and sent as partial frames, with full frames after
+  enable, framebuffer and rotation changes.
 
 ## Quick start
 
