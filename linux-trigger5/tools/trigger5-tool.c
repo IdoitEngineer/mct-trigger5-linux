@@ -77,11 +77,13 @@ static const char *rotation_name(enum canvas_rotation rotation)
 struct test_options {
 	enum canvas_rotation rotation;
 	const char *mode;
+	const char *device_mode;
 	int seconds;
 	bool animate;
 	bool cursor;
 	bool full;
 	bool restore;
+	bool list_modes;
 	int damage_align;
 };
 
@@ -145,10 +147,25 @@ static int run_test(struct test_options *opt)
 	signal(SIGINT, handle_signal);
 	signal(SIGTERM, handle_signal);
 
-	if (display_open(&d, true))
+	if (display_open(&d, !opt->list_modes))
 		return EXIT_FAILURE;
 
+	if (opt->list_modes) {
+		display_list_modes(&d);
+		display_close(&d);
+		return EXIT_SUCCESS;
+	}
+
+	if (opt->mode && opt->device_mode) {
+		fprintf(stderr, "--mode and --device-mode cannot be combined\n");
+		goto out_close;
+	}
+
 	if (opt->mode && display_parse_mode(&d, opt->mode))
+		goto out_close;
+
+	if (opt->device_mode &&
+	    display_parse_device_mode(&d, opt->device_mode))
 		goto out_close;
 
 	rotation = drm_rotation(opt->rotation);
@@ -361,7 +378,8 @@ static void usage(const char *argv0)
 	printf("Usage:\n"
 	       "  %s probe [--json]\n"
 	       "  %s test [--landscape | --portrait-left | --portrait-right]\n"
-	       "            [--mode WxH] [--seconds N] [--no-animate] [--full]\n"
+	       "            [--mode WxH[@R]] [--device-mode N|WxH[@R]] [--list-modes]\n"
+	       "            [--seconds N] [--no-animate] [--full]\n"
 	       "            [--no-cursor] [--no-restore] [--damage-align N]\n"
 	       "  %s cursor [--seconds N]\n"
 	       "\n"
@@ -372,7 +390,11 @@ static void usage(const char *argv0)
 	       "cursor  shortcut for a landscape run focused on cursor movement.\n"
 	       "\n"
 	       "Rotation flags are separate on purpose: --portrait-left uses DRM\n"
-	       "rotate-90 (counter-clockwise), --portrait-right uses rotate-270.\n",
+	       "rotate-90 (counter-clockwise), --portrait-right uses rotate-270.\n"
+	       "\n"
+	       "test --device-mode selects an entry from the adapter's 0xA4 table\n"
+	       "by index or resolution; --list-modes prints both mode lists and\n"
+	       "does not require DRM master.\n",
 	       argv0, argv0, argv0);
 }
 
@@ -400,6 +422,10 @@ static int parse_test_args(int argc, char **argv, struct test_options *opt,
 			opt->rotation = CANVAS_ROT_180;
 		} else if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
 			opt->mode = argv[++i];
+		} else if (!strcmp(argv[i], "--device-mode") && i + 1 < argc) {
+			opt->device_mode = argv[++i];
+		} else if (!strcmp(argv[i], "--list-modes")) {
+			opt->list_modes = true;
 		} else if (!strcmp(argv[i], "--seconds") && i + 1 < argc) {
 			opt->seconds = atoi(argv[++i]);
 			if (opt->seconds < 1)

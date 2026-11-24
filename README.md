@@ -449,7 +449,16 @@ sudo trigger5-tool test --landscape        # rotate-0
 sudo trigger5-tool test --portrait-left    # rotate-90, 90° CCW
 sudo trigger5-tool test --portrait-right   # rotate-270, 90° CW
 sudo trigger5-tool cursor --seconds 8
+
+trigger5-tool test --list-modes            # monitor + adapter mode lists
+sudo trigger5-tool test --device-mode 5    # force 0xA4 table entry 5
+sudo trigger5-tool test --device-mode 1280x720@60
 ```
+
+`--mode` selects from the monitor EDID list. `--device-mode` forces an entry
+from the adapter's own `0xA4` table by index or resolution, using the monitor's
+timings when it lists the same mode and CEA/CVT timings otherwise. Forcing a
+mode the monitor cannot lock can blank the output.
 
 `test` animates a test bitmap, draws a frame counter, moves the hardware
 cursor through the corners (including a negative top-left position), and
