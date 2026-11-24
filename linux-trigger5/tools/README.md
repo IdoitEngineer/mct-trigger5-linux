@@ -94,6 +94,7 @@ Other options:
 | `--no-animate` | Show a static frame only. |
 | `--full` | Send a full-frame damage rectangle each frame (slow, useful to compare against damage tracking). |
 | `--damage` | Use per-frame damage rectangles (default). |
+| `--damage-align N` | Expand damage rectangles to N-pixel boundaries in the tool (default 1; the driver aligns to 4 itself). |
 | `--no-cursor` | Do not create or move a cursor. |
 | `--no-restore` | Leave the test mode active on exit (the next modeset or reboot recovers). |
 

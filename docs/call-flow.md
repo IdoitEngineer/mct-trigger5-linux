@@ -132,11 +132,13 @@ flowchart TD
     B -- yes --> C["rotation = state->rotation"]
     C --> D{"full frame required?<br/>full_frame_always<br/>full_frame_period_ms<br/>after enable / fb change / rotation change"}
     D -- yes --> E["current_rect = source rect"]
-    D -- no --> F["damage = drm_atomic_helper_damage_merged()"]
+    D -- no --> F["damage iterator:<br/>drm_atomic_helper_damage_iter_init/next"]
     F -->|no damage| Z
-    F -->|damage| G["clip damage to visible src rect"]
+    F -->|damage| G["clip to visible src rect<br/>align x to 4 pixels"]
+    G --> G2["merge overlapping or<br/>vertically adjacent clips"]
     E --> H["drm_fb_xrgb8888_to_rgb888<br/>into URB buffer"]
-    G --> H
+    G2 --> H2["one header + payload<br/>per remaining clip"]
+    H2 --> H
     C -->|rotation 90/180/270| I["rotate while converting<br/>send full destination"]
     I --> H
     H --> J["fill trigger5_bulk_header<br/>0xfb, counter, offsets, size, checksum"]
@@ -158,8 +160,14 @@ Details:
   through the eight transfers. A timeout latches `needs_reset`.
 - `trigger5_reset()` only logs and latches. `usb_queue_reset_device()` was
   deliberately removed: a port reset has taken down the whole xHCI controller.
-- Damage clips come from `drmModeDirtyFB`/`FB_DAMAGE_CLIPS`; the driver rounds
-  them the same way `drm_atomic_helper_damage_iter_init()` does.
+- Damage clips come from `drmModeDirtyFB`/`FB_DAMAGE_CLIPS` and are walked
+  with `drm_atomic_helper_damage_iter_init()`/`_next()`. Each clip is clipped
+  to the visible source rectangle, expanded to a 4-pixel boundary, and merged
+  with any clip it overlaps or forms a vertically adjacent band with.
+- One bulk header plus payload sequence is sent per remaining clip, so
+  disjoint damage no longer inflates into a single screen-sized bounding box.
+- The adapter corrupts partial updates whose rows start or end on a 1- or
+  2-pixel boundary; 4 pixels is the smallest clean alignment.
 - Rotation 90/180/270 always sends a full destination frame (partial updates
   under rotation are not implemented).
 

@@ -71,7 +71,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      3
+#define DRIVER_PATCHLEVEL      4
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -216,6 +216,7 @@ struct trigger5_cursor_header {
 
 #define TRIGGER5_BULK_TIMEOUT_MS               2000
 #define TRIGGER5_DAMAGE_ALIGN                  4
+#define TRIGGER5_MAX_DAMAGE_RECTS              16
 
 /*
  * Xorg's modesetting driver (as of 1.21) does not use the plane rotation
@@ -518,6 +519,161 @@ static u8 trigger5_bulk_header_checksum(const struct trigger5_bulk_header *heade
        return checksum & 0xff;
 }
 
+/*
+ * The adapter's partial-update path requires each row to start and end on a
+ * 4-pixel boundary; 1- and 2-pixel alignment corrupts the panel.
+ */
+static void trigger5_damage_align(struct drm_rect *rect,
+				  const struct drm_rect *src_rect)
+{
+	rect->x1 &= ~(TRIGGER5_DAMAGE_ALIGN - 1);
+	rect->x2 = (rect->x2 + TRIGGER5_DAMAGE_ALIGN - 1) &
+		   ~(TRIGGER5_DAMAGE_ALIGN - 1);
+	rect->x1 = max_t(int, rect->x1, src_rect->x1);
+	rect->x2 = min_t(int, rect->x2, src_rect->x2);
+}
+
+static bool trigger5_rects_mergeable(const struct drm_rect *a,
+				     const struct drm_rect *b)
+{
+	bool overlap_x = a->x1 < b->x2 && b->x1 < a->x2;
+	bool overlap_y = a->y1 < b->y2 && b->y1 < a->y2;
+
+	if (overlap_x && overlap_y)
+		return true;
+
+	/* Merge touching horizontal bands so one payload covers both. */
+	return overlap_x && (a->y2 == b->y1 || b->y2 == a->y1);
+}
+
+static void trigger5_rect_union(struct drm_rect *dst,
+				const struct drm_rect *src)
+{
+	dst->x1 = min(dst->x1, src->x1);
+	dst->y1 = min(dst->y1, src->y1);
+	dst->x2 = max(dst->x2, src->x2);
+	dst->y2 = max(dst->y2, src->y2);
+}
+
+static void trigger5_damage_add(struct drm_rect *rects, int *count,
+				const struct drm_rect *rect)
+{
+	int i;
+
+	for (i = 0; i < *count; i++) {
+		if (trigger5_rects_mergeable(&rects[i], rect)) {
+			trigger5_rect_union(&rects[i], rect);
+			return;
+		}
+	}
+
+	if (*count < TRIGGER5_MAX_DAMAGE_RECTS) {
+		rects[(*count)++] = *rect;
+		return;
+	}
+
+	/* Too many disjoint clips: extend the last one rather than drop damage. */
+	trigger5_rect_union(&rects[TRIGGER5_MAX_DAMAGE_RECTS - 1], rect);
+}
+
+/* Merge rectangles that overlap or form vertically adjacent bands. */
+static void trigger5_damage_coalesce(struct drm_rect *rects, int *count)
+{
+	bool merged = true;
+
+	while (merged) {
+		int i, j;
+
+		merged = false;
+		for (i = 0; i < *count; i++) {
+			for (j = i + 1; j < *count; j++) {
+				if (!trigger5_rects_mergeable(&rects[i],
+							      &rects[j]))
+					continue;
+
+				trigger5_rect_union(&rects[i], &rects[j]);
+				rects[j] = rects[*count - 1];
+				(*count)--;
+				merged = true;
+				break;
+			}
+			if (merged)
+				break;
+		}
+	}
+}
+
+/*
+ * Send one partial frame: a bulk header followed by the RGB888 rows of
+ * @rect.  Each call is an independent update, so disjoint damage regions do
+ * not inflate into one screen-sized bounding box.
+ */
+static int trigger5_plane_send_rect(struct trigger5_device *trigger5,
+				    struct drm_plane_state *state,
+				    struct drm_shadow_plane_state *shadow,
+				    const struct drm_rect *src_rect,
+				    const struct drm_rect *rect)
+{
+	struct trigger5_transfer *transfer;
+	struct trigger5_bulk_header *header;
+	struct drm_rect clip = *rect;
+	struct iosys_map data_map;
+	size_t payload_len;
+	int width = drm_rect_width(rect);
+	int height = drm_rect_height(rect);
+	int lines_per_urb, y;
+
+	if (width <= 0 || height <= 0)
+		return 0;
+
+	payload_len = array3_size(width, height, 3);
+	lines_per_urb = TRIGGER5_URB_BUF_SIZE / (width * 3);
+	if (!lines_per_urb)
+		return -EINVAL;
+
+	transfer = trigger5_get_next_urb(trigger5);
+	if (IS_ERR(transfer))
+		return PTR_ERR(transfer);
+
+	header = transfer->urb->transfer_buffer;
+	header->magic = 0xfb;
+	header->length = 0x14;
+	/* flags 0: uncompressed 24-bit RGB888. */
+	header->counter = cpu_to_le16((trigger5->frame_counter++) & 0xfff);
+	header->horizontal_offset = cpu_to_le16(rect->x1 - src_rect->x1);
+	header->vertical_offset = cpu_to_le16(rect->y1 - src_rect->y1);
+	header->width = cpu_to_le16(width);
+	header->height = cpu_to_le16(height);
+	header->payload_length = cpu_to_le32((u32)payload_len);
+	header->flags = 0x1;
+	header->unknown1 = 0;
+	header->unknown2 = 0;
+	header->checksum = trigger5_bulk_header_checksum(header);
+
+	if (trigger5_submit_urb(transfer, sizeof(*header)))
+		return -EIO;
+
+	for (y = rect->y1; y < rect->y2; y += lines_per_urb) {
+		clip.y1 = y;
+		clip.y2 = min(y + lines_per_urb, rect->y2);
+
+		transfer = trigger5_get_next_urb(trigger5);
+		if (IS_ERR(transfer))
+			return PTR_ERR(transfer);
+
+		iosys_map_set_vaddr(&data_map, transfer->urb->transfer_buffer);
+		drm_fb_xrgb8888_to_rgb888(&data_map, NULL, &shadow->data[0],
+					  state->fb, &clip,
+					  &shadow->fmtcnv_state);
+
+		if (trigger5_submit_urb(transfer,
+					width * 3 * drm_rect_height(&clip)))
+			return -EIO;
+	}
+
+	return 0;
+}
+
 static void trigger5_plane_atomic_update(struct drm_plane *plane,
 					TRIGGER5_ATOMIC_COMMIT *atomic_state)
 {
@@ -533,7 +689,7 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 							    state->crtc) : NULL;
 	struct trigger5_transfer *transfer;
 	struct trigger5_bulk_header *header;
-	struct drm_rect current_rect, src_rect, damage, clip;
+	struct drm_rect current_rect, src_rect, clip;
 	struct iosys_map data_map;
 	size_t payload_len;
 	unsigned int rotation;
@@ -587,95 +743,47 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	       old_state->rotation != state->rotation ||
 	       rotation != DRM_MODE_ROTATE_0;
 
-	if (!full && !drm_atomic_helper_damage_merged(old_state, state, &damage))
-		goto exit;
-
 	if (full)
 		trigger5->last_full_frame = jiffies;
 
 	trigger5->full_frame = false;
 
 	if (rotation == DRM_MODE_ROTATE_0) {
-		if (full) {
-			current_rect = src_rect;
-		} else {
-			current_rect = damage;
-			/* Never send pixels outside the visible source area. */
-			if (!drm_rect_intersect(&current_rect, &src_rect))
-				goto exit;
+		struct drm_atomic_helper_damage_iter iter;
+		struct drm_rect rects[TRIGGER5_MAX_DAMAGE_RECTS];
+		struct drm_rect damage;
+		int count = 0, i;
 
-			/*
-			 * The adapter's partial-update path requires the row
-			 * start and width to be 4-pixel aligned; 1- and
-			 * 2-pixel alignment corrupts the panel.  Expand the
-			 * merged damage rectangle outwards and clamp it back
-			 * to the visible source area.
-			 */
-			current_rect.x1 &= ~(TRIGGER5_DAMAGE_ALIGN - 1);
-			current_rect.x2 = (current_rect.x2 +
-					   TRIGGER5_DAMAGE_ALIGN - 1) &
-					  ~(TRIGGER5_DAMAGE_ALIGN - 1);
-			current_rect.x1 = max_t(int, current_rect.x1,
-						src_rect.x1);
-			current_rect.x2 = min_t(int, current_rect.x2,
-						src_rect.x2);
+		if (full) {
+			rects[count++] = src_rect;
+		} else {
+			drm_atomic_helper_damage_iter_init(&iter, old_state,
+							   state);
+			drm_atomic_for_each_plane_damage(&iter, &damage) {
+				if (!drm_rect_intersect(&damage, &src_rect))
+					continue;
+
+				trigger5_damage_align(&damage, &src_rect);
+				if (drm_rect_width(&damage) <= 0 ||
+				    drm_rect_height(&damage) <= 0)
+					continue;
+
+				trigger5_damage_add(rects, &count, &damage);
+			}
+			trigger5_damage_coalesce(rects, &count);
 		}
 
-		width = drm_rect_width(&current_rect);
-		height = drm_rect_height(&current_rect);
-		if (width <= 0 || height <= 0)
+		if (!count)
 			goto exit;
 
-		payload_len = array3_size(width, height, 3);
-		lines_per_urb = TRIGGER5_URB_BUF_SIZE / (width * 3);
-
-		if (drm_gem_fb_begin_cpu_access(state->fb, DMA_FROM_DEVICE) < 0)
+		if (drm_gem_fb_begin_cpu_access(state->fb,
+						DMA_FROM_DEVICE) < 0)
 			goto exit;
 
-		transfer = trigger5_get_next_urb(trigger5);
-		if (IS_ERR(transfer))
-			goto exit_end_cpu_access;
-
-		header = transfer->urb->transfer_buffer;
-		header->magic = 0xfb;
-		header->length = 0x14;
-		/* flags 0: uncompressed 24-bit RGB888. */
-		header->counter =
-			cpu_to_le16((trigger5->frame_counter++) & 0xfff);
-		header->horizontal_offset =
-			cpu_to_le16(current_rect.x1 - src_rect.x1);
-		header->vertical_offset =
-			cpu_to_le16(current_rect.y1 - src_rect.y1);
-		header->width = cpu_to_le16(width);
-		header->height = cpu_to_le16(height);
-		header->payload_length = cpu_to_le32((u32)payload_len);
-		header->flags = 0x1;
-		header->unknown1 = 0;
-		header->unknown2 = 0;
-		header->checksum = trigger5_bulk_header_checksum(header);
-
-		if (trigger5_submit_urb(transfer, sizeof(*header)))
-			goto exit_end_cpu_access;
-
-		clip = current_rect;
-		for (y = current_rect.y1; y < current_rect.y2;
-		     y += lines_per_urb) {
-			clip.y1 = y;
-			clip.y2 = min(y + lines_per_urb, current_rect.y2);
-
-			transfer = trigger5_get_next_urb(trigger5);
-			if (IS_ERR(transfer))
-				break;
-
-			iosys_map_set_vaddr(&data_map,
-					    transfer->urb->transfer_buffer);
-			drm_fb_xrgb8888_to_rgb888(&data_map, NULL,
-						  &shadow_plane_state->data[0],
-						  state->fb, &clip,
-						  &shadow_plane_state->fmtcnv_state);
-
-			if (trigger5_submit_urb(transfer,
-						width * 3 * drm_rect_height(&clip)))
+		for (i = 0; i < count; i++) {
+			if (trigger5_plane_send_rect(trigger5, state,
+						     shadow_plane_state,
+						     &src_rect, &rects[i]))
 				break;
 		}
 

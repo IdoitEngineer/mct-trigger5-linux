@@ -4,6 +4,23 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.4] - 2026-11-23
+
+### Changed
+
+- Landscape partial updates now walk the DRM damage iterator instead of calling
+  `drm_atomic_helper_damage_merged()`. Each clip is clipped to the visible
+  source rectangle and aligned to a 4-pixel boundary, then sent as its own bulk
+  header and RGB888 payload.
+- Clips that overlap or form vertically adjacent bands are coalesced before
+  sending, so disjoint dirty regions no longer inflate into one screen-sized
+  bounding box.
+
+### Fixed
+
+- Animated landscape updates cover only the dirty regions rather than the
+  bounding box of every clip.
+
 ## [1.0.3] - 2026-11-23
 
 ### Fixed
