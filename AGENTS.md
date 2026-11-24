@@ -37,7 +37,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - Supports Linux **6.12+** (`BUILD_EXCLUSIVE_KERNEL_MIN` in `dkms.conf`). `trigger5.c` has guards for 6.12 and the 7.x API changes (7.2 `struct drm_atomic_commit`, 7.3 `atomic_create_state`). Do not remove them, and do not validate only against `uname -r`.
 - `trigger5.c` is a modified upstream v6 copy. Local changes must also be reflected in `linux-trigger5/trigger5-local.patch`; no script or CI check enforces this. Regenerate by reverse-applying the existing patch to the previous `trigger5.c` to reconstruct the v6 base, then `diff -u` the new file.
 - EDID is read once at probe and cached. Never re-read EDID while bulk transfers are active: the adapter returns corrupt data and the connector loses its mode list.
-- Rotation 90/180/270 is converted in the driver and sent as full frames. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; that is what `full_frame_period_ms` is for. Read the root README before changing damage/full-frame logic.
+- Rotation 90/180/270 is converted in the driver. Damage clips are mapped into panel space and sent as partial destination frames; full frames are still sent after enable, framebuffer changes and rotation changes. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; that is what `full_frame_period_ms` is for. Read the root README before changing damage/full-frame logic.
 - A USB transfer error latches `needs_reset` and stops I/O. Do **not** reintroduce `usb_queue_reset_device()`: it has taken down the whole xHCI controller. Recovery is replug or unbind/rebind.
 - Hardware cursor: the visible cursor is uploaded by the Windows driver as a **bulk type-2 packet** (64×64 ARGB, 16 KiB, then show/move/hide packets). The `0xC8` control writes (`0xE868` enable, `wValue=X`/`wIndex=Y` position, negative `value - 1`) are secondary. Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`; implement the bulk path before claiming cursor support. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
 
@@ -60,7 +60,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Packaging and CI
 
-- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.4_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
+- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.5_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
 - The package is DKMS-source only (`Architecture: all`). Keep the hand-written `debian/trigger5-dkms.postinst` and `prerm`: stock Debian/Ubuntu `dkms` lacks the `dh_dkms` addon.
 - `lintian` must stay clean; the `lint:debian` CI job builds and lints the package.
 - Containers share the host `uname -r`. `ci/test-install.sh` deliberately symlinks the host build tree and builds the distro kernel explicitly with `dkms -k <header-version>`; preserve that when editing CI.

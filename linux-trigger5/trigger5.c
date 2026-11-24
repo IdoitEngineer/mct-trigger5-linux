@@ -71,7 +71,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      4
+#define DRIVER_PATCHLEVEL      5
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -523,14 +523,54 @@ static u8 trigger5_bulk_header_checksum(const struct trigger5_bulk_header *heade
  * The adapter's partial-update path requires each row to start and end on a
  * 4-pixel boundary; 1- and 2-pixel alignment corrupts the panel.
  */
-static void trigger5_damage_align(struct drm_rect *rect,
-				  const struct drm_rect *src_rect)
+static void trigger5_damage_align(struct drm_rect *rect, int x_min, int x_max)
 {
 	rect->x1 &= ~(TRIGGER5_DAMAGE_ALIGN - 1);
 	rect->x2 = (rect->x2 + TRIGGER5_DAMAGE_ALIGN - 1) &
 		   ~(TRIGGER5_DAMAGE_ALIGN - 1);
-	rect->x1 = max_t(int, rect->x1, src_rect->x1);
-	rect->x2 = min_t(int, rect->x2, src_rect->x2);
+	rect->x1 = max_t(int, rect->x1, x_min);
+	rect->x2 = min_t(int, rect->x2, x_max);
+}
+
+/*
+ * Map a framebuffer damage rectangle into panel coordinates.  The supported
+ * rotations are axis-aligned, so the mapping is exact.
+ */
+static void trigger5_rotate_damage_rect(const struct drm_rect *rect,
+					const struct drm_rect *src_rect,
+					unsigned int rotation,
+					struct drm_rect *dst)
+{
+	int sw = drm_rect_width(src_rect);
+	int sh = drm_rect_height(src_rect);
+	int sx1 = rect->x1 - src_rect->x1;
+	int sx2 = rect->x2 - src_rect->x1;
+	int sy1 = rect->y1 - src_rect->y1;
+	int sy2 = rect->y2 - src_rect->y1;
+
+	switch (rotation) {
+	case DRM_MODE_ROTATE_90:
+		dst->x1 = sy1;
+		dst->x2 = sy2;
+		dst->y1 = sw - sx2;
+		dst->y2 = sw - sx1;
+		break;
+	case DRM_MODE_ROTATE_180:
+		dst->x1 = sw - sx2;
+		dst->x2 = sw - sx1;
+		dst->y1 = sh - sy2;
+		dst->y2 = sh - sy1;
+		break;
+	case DRM_MODE_ROTATE_270:
+		dst->x1 = sh - sy2;
+		dst->x2 = sh - sy1;
+		dst->y1 = sx1;
+		dst->y2 = sx2;
+		break;
+	default:
+		*dst = *rect;
+		break;
+	}
 }
 
 static bool trigger5_rects_mergeable(const struct drm_rect *a,
@@ -674,6 +714,118 @@ static int trigger5_plane_send_rect(struct trigger5_device *trigger5,
 	return 0;
 }
 
+/*
+ * Send one rotated partial frame.  @dst_rect is in panel coordinates; the
+ * pixel at each destination position is looked up in framebuffer space using
+ * the plane rotation.
+ */
+static int trigger5_plane_send_rotated_rect(struct trigger5_device *trigger5,
+					    struct drm_plane_state *state,
+					    struct drm_shadow_plane_state *shadow,
+					    const struct drm_rect *src_rect,
+					    unsigned int rotation,
+					    const struct drm_rect *dst_rect)
+{
+	struct trigger5_transfer *transfer;
+	struct trigger5_bulk_header *header;
+	const struct iosys_map *src = &shadow->data[0];
+	unsigned int pitch = state->fb->pitches[0];
+	size_t payload_len;
+	int sw = drm_rect_width(src_rect);
+	int sh = drm_rect_height(src_rect);
+	int width = drm_rect_width(dst_rect);
+	int height = drm_rect_height(dst_rect);
+	int lines_per_urb, y;
+
+	if (width <= 0 || height <= 0)
+		return 0;
+
+	payload_len = array3_size(width, height, 3);
+	lines_per_urb = TRIGGER5_URB_BUF_SIZE / (width * 3);
+	if (!lines_per_urb)
+		return -EINVAL;
+
+	transfer = trigger5_get_next_urb(trigger5);
+	if (IS_ERR(transfer))
+		return PTR_ERR(transfer);
+
+	header = transfer->urb->transfer_buffer;
+	header->magic = 0xfb;
+	header->length = 0x14;
+	header->counter = cpu_to_le16((trigger5->frame_counter++) & 0xfff);
+	header->horizontal_offset = cpu_to_le16(dst_rect->x1);
+	header->vertical_offset = cpu_to_le16(dst_rect->y1);
+	header->width = cpu_to_le16(width);
+	header->height = cpu_to_le16(height);
+	header->payload_length = cpu_to_le32((u32)payload_len);
+	header->flags = 0x1;
+	header->unknown1 = 0;
+	header->unknown2 = 0;
+	header->checksum = trigger5_bulk_header_checksum(header);
+
+	if (trigger5_submit_urb(transfer, sizeof(*header)))
+		return -EIO;
+
+	for (y = dst_rect->y1; y < dst_rect->y2; y += lines_per_urb) {
+		int y2 = min(y + lines_per_urb, dst_rect->y2);
+		int dx, dy;
+		u8 *out;
+
+		transfer = trigger5_get_next_urb(trigger5);
+		if (IS_ERR(transfer))
+			return PTR_ERR(transfer);
+
+		out = transfer->urb->transfer_buffer;
+		for (dy = y; dy < y2; dy++) {
+			for (dx = dst_rect->x1; dx < dst_rect->x2; dx++) {
+				int sx, sy;
+				u32 px;
+
+				switch (rotation) {
+				case DRM_MODE_ROTATE_90:
+					sx = sw - 1 - dy;
+					sy = dx;
+					break;
+				case DRM_MODE_ROTATE_180:
+					sx = sw - 1 - dx;
+					sy = sh - 1 - dy;
+					break;
+				case DRM_MODE_ROTATE_270:
+					sx = dy;
+					sy = sh - 1 - dx;
+					break;
+				default:
+					sx = dx;
+					sy = dy;
+					break;
+				}
+
+				sx += src_rect->x1;
+				sy += src_rect->y1;
+				if (sx < src_rect->x1 ||
+				    sx >= src_rect->x2 ||
+				    sy < src_rect->y1 ||
+				    sy >= src_rect->y2) {
+					*out++ = 0;
+					*out++ = 0;
+					*out++ = 0;
+					continue;
+				}
+				px = iosys_map_rd(src, sy * pitch + sx * 4,
+						  u32);
+				*out++ = (px >> 16) & 0xff;
+				*out++ = (px >> 8) & 0xff;
+				*out++ = px & 0xff;
+			}
+		}
+
+		if (trigger5_submit_urb(transfer, width * 3 * (y2 - y)))
+			return -EIO;
+	}
+
+	return 0;
+}
+
 static void trigger5_plane_atomic_update(struct drm_plane *plane,
 					TRIGGER5_ATOMIC_COMMIT *atomic_state)
 {
@@ -687,14 +839,9 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	struct drm_crtc_state *crtc_state =
 		state->crtc ? drm_atomic_get_new_crtc_state(atomic_state,
 							    state->crtc) : NULL;
-	struct trigger5_transfer *transfer;
-	struct trigger5_bulk_header *header;
-	struct drm_rect current_rect, src_rect, clip;
-	struct iosys_map data_map;
-	size_t payload_len;
+	struct drm_rect src_rect;
 	unsigned int rotation;
-	int width, height, lines_per_urb;
-	int idx, y;
+	int idx;
 	bool full, periodic_full;
 
 	if (!drm_dev_enter(plane->dev, &idx))
@@ -740,8 +887,7 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	full = full_frame_always || periodic_full || trigger5->full_frame ||
 	       !old_state->fb || old_state->fb != state->fb ||
 	       old_state->crtc != state->crtc ||
-	       old_state->rotation != state->rotation ||
-	       rotation != DRM_MODE_ROTATE_0;
+	       old_state->rotation != state->rotation;
 
 	if (full)
 		trigger5->last_full_frame = jiffies;
@@ -763,7 +909,8 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 				if (!drm_rect_intersect(&damage, &src_rect))
 					continue;
 
-				trigger5_damage_align(&damage, &src_rect);
+				trigger5_damage_align(&damage, src_rect.x1,
+						      src_rect.x2);
 				if (drm_rect_width(&damage) <= 0 ||
 				    drm_rect_height(&damage) <= 0)
 					continue;
@@ -791,124 +938,82 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	}
 
 	/*
-	 * Rotated output. The adapter always scans out the CRTC mode in its
-	 * native orientation, so rotate the pixels while converting and send
-	 * the whole destination rectangle. Partial updates under rotation are
-	 * a later optimisation.
+	 * Rotated output.  The adapter always scans out the CRTC mode in its
+	 * native orientation, so rotate the pixels while converting.  Damage
+	 * clips are mapped from framebuffer space into panel space, aligned
+	 * there, and sent as partial destination frames.
 	 */
-	if (crtc_state) {
-		current_rect.x1 = 0;
-		current_rect.y1 = 0;
-		current_rect.x2 = crtc_state->mode.hdisplay;
-		current_rect.y2 = crtc_state->mode.vdisplay;
-	} else {
-		current_rect = state->dst;
-	}
-	width = drm_rect_width(&current_rect);
-	height = drm_rect_height(&current_rect);
-	if (width <= 0 || height <= 0)
-		goto exit;
-
-	if ((rotation == DRM_MODE_ROTATE_90 || rotation == DRM_MODE_ROTATE_270) &&
-	    (width != drm_rect_height(&src_rect) ||
-	     height != drm_rect_width(&src_rect)))
-		drm_info(&trigger5->drm,
-			 "rotation=%u: destination %dx%d does not match rotated source %dx%d\n",
-			 rotation, width, height,
-			 drm_rect_width(&src_rect), drm_rect_height(&src_rect));
-
-	payload_len = array3_size(width, height, 3);
-	lines_per_urb = TRIGGER5_URB_BUF_SIZE / (width * 3);
-
-	if (drm_gem_fb_begin_cpu_access(state->fb, DMA_FROM_DEVICE) < 0)
-		goto exit;
-
-	transfer = trigger5_get_next_urb(trigger5);
-	if (IS_ERR(transfer))
-		goto exit_end_cpu_access;
-
-	header = transfer->urb->transfer_buffer;
-	header->magic = 0xfb;
-	header->length = 0x14;
-	header->counter = cpu_to_le16((trigger5->frame_counter++) & 0xfff);
-	header->horizontal_offset = cpu_to_le16(current_rect.x1);
-	header->vertical_offset = cpu_to_le16(current_rect.y1);
-	header->width = cpu_to_le16(width);
-	header->height = cpu_to_le16(height);
-	header->payload_length = cpu_to_le32((u32)payload_len);
-	header->flags = 0x1;
-	header->unknown1 = 0;
-	header->unknown2 = 0;
-	header->checksum = trigger5_bulk_header_checksum(header);
-
-	if (trigger5_submit_urb(transfer, sizeof(*header)))
-		goto exit_end_cpu_access;
-
 	{
-		unsigned int pitch = state->fb->pitches[0];
-		const struct iosys_map *src = &shadow_plane_state->data[0];
-		int sw = drm_rect_width(&src_rect);
-		int sh = drm_rect_height(&src_rect);
+		struct drm_atomic_helper_damage_iter iter;
+		struct drm_rect rects[TRIGGER5_MAX_DAMAGE_RECTS];
+		struct drm_rect damage;
+		int dst_w, dst_h;
+		int count = 0, i;
 
-		for (y = current_rect.y1; y < current_rect.y2;
-		     y += lines_per_urb) {
-			int y2 = min(y + lines_per_urb, current_rect.y2);
-			int dy, dx;
-			u8 *out;
+		if (crtc_state) {
+			dst_w = crtc_state->mode.hdisplay;
+			dst_h = crtc_state->mode.vdisplay;
+		} else {
+			dst_w = drm_rect_width(&state->dst);
+			dst_h = drm_rect_height(&state->dst);
+		}
 
-			transfer = trigger5_get_next_urb(trigger5);
-			if (IS_ERR(transfer))
-				break;
+		if ((rotation == DRM_MODE_ROTATE_90 ||
+		     rotation == DRM_MODE_ROTATE_270) &&
+		    (dst_w != drm_rect_height(&src_rect) ||
+		     dst_h != drm_rect_width(&src_rect)))
+			drm_info(&trigger5->drm,
+				 "rotation=%u: destination %dx%d does not match rotated source %dx%d\n",
+				 rotation, dst_w, dst_h,
+				 drm_rect_width(&src_rect),
+				 drm_rect_height(&src_rect));
 
-			out = transfer->urb->transfer_buffer;
-			for (dy = y; dy < y2; dy++) {
-				for (dx = current_rect.x1; dx < current_rect.x2;
-				     dx++) {
-					int rx = dx - current_rect.x1;
-					int ry = dy - current_rect.y1;
-					int sx, sy;
-					u32 px;
+		if (dst_w <= 0 || dst_h <= 0)
+			goto exit;
 
-					switch (rotation) {
-					case DRM_MODE_ROTATE_90:
-						sx = sw - 1 - ry;
-						sy = rx;
-						break;
-					case DRM_MODE_ROTATE_180:
-						sx = sw - 1 - rx;
-						sy = sh - 1 - ry;
-						break;
-					case DRM_MODE_ROTATE_270:
-						sx = ry;
-						sy = sh - 1 - rx;
-						break;
-					default:
-						sx = rx;
-						sy = ry;
-						break;
-					}
+		if (full) {
+			rects[count].x1 = 0;
+			rects[count].y1 = 0;
+			rects[count].x2 = dst_w;
+			rects[count].y2 = dst_h;
+			count++;
+		} else {
+			drm_atomic_helper_damage_iter_init(&iter, old_state,
+							   state);
+			drm_atomic_for_each_plane_damage(&iter, &damage) {
+				struct drm_rect dst;
 
-					sx += src_rect.x1;
-					sy += src_rect.y1;
-					if (sx < src_rect.x1 || sx >= src_rect.x2 ||
-					    sy < src_rect.y1 || sy >= src_rect.y2) {
-						*out++ = 0;
-						*out++ = 0;
-						*out++ = 0;
-						continue;
-					}
-					px = iosys_map_rd(src, sy * pitch + sx * 4,
-							  u32);
-					*out++ = (px >> 16) & 0xff;
-					*out++ = (px >> 8) & 0xff;
-					*out++ = px & 0xff;
-				}
+				if (!drm_rect_intersect(&damage, &src_rect))
+					continue;
+
+				trigger5_rotate_damage_rect(&damage, &src_rect,
+							    rotation, &dst);
+				trigger5_damage_align(&dst, 0, dst_w);
+				if (drm_rect_width(&dst) <= 0 ||
+				    drm_rect_height(&dst) <= 0)
+					continue;
+
+				trigger5_damage_add(rects, &count, &dst);
 			}
+			trigger5_damage_coalesce(rects, &count);
+		}
 
-			if (trigger5_submit_urb(transfer,
-						width * 3 * (y2 - y)))
+		if (!count)
+			goto exit;
+
+		if (drm_gem_fb_begin_cpu_access(state->fb,
+						DMA_FROM_DEVICE) < 0)
+			goto exit;
+
+		for (i = 0; i < count; i++) {
+			if (trigger5_plane_send_rotated_rect(trigger5, state,
+							     shadow_plane_state,
+							     &src_rect, rotation,
+							     &rects[i]))
 				break;
 		}
+
+		goto exit_end_cpu_access;
 	}
 
 exit_end_cpu_access:

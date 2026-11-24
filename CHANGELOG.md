@@ -4,6 +4,22 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.5] - 2026-11-24
+
+### Added
+
+- Partial damage updates under plane rotation. Portrait modes map each
+  framebuffer damage rectangle into panel space, align it to 4 pixels there,
+  coalesce overlapping or vertically adjacent rectangles, and send one bulk
+  header and RGB888 payload per remaining rectangle.
+
+### Changed
+
+- Rotation no longer forces a complete frame on every commit. Full frames are
+  still sent after enable, framebuffer changes and rotation changes.
+- `trigger5-tool` no longer turns portrait animation into a full-framebuffer
+  damage clip, so the rotated modes exercise the per-clip path.
+
 ## [1.0.4] - 2026-11-23
 
 ### Changed

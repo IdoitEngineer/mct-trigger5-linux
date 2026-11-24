@@ -85,6 +85,10 @@ The left and right portrait runs are distinct cards: left uses a blue accent
 and a left-pointing arrow, right uses an orange accent and a right-pointing
 arrow, so the two orientations are visually unambiguous.
 
+Animated portrait runs use the same per-clip damage path as landscape: the
+driver maps each framebuffer rectangle into panel space and sends only the
+dirty regions.
+
 Other options:
 
 | Option | Meaning |

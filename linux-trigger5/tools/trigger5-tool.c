@@ -252,7 +252,7 @@ static int run_test(struct test_options *opt)
 				      0x00ff8000, "TRIGGER 5");
 			canvas_present(&canvas);
 
-			if (opt->full || opt->rotation != CANVAS_ROT_0) {
+			if (opt->full) {
 				clips[0].x1 = 0;
 				clips[0].y1 = 0;
 				clips[0].x2 = fb_w;

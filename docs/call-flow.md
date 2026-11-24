@@ -134,13 +134,15 @@ flowchart TD
     D -- yes --> E["current_rect = source rect"]
     D -- no --> F["damage iterator:<br/>drm_atomic_helper_damage_iter_init/next"]
     F -->|no damage| Z
-    F -->|damage| G["clip to visible src rect<br/>align x to 4 pixels"]
-    G --> G2["merge overlapping or<br/>vertically adjacent clips"]
+    F -->|damage| G["clip to visible src rect"]
+    G --> G3{"rotation?"}
+    G3 -- 0 --> G4["align x to 4 pixels"]
+    G3 -- 90/180/270 --> G5["map clip to panel space<br/>align panel x to 4 pixels"]
+    G4 --> G2["merge overlapping or<br/>vertically adjacent clips"]
+    G5 --> G2
     E --> H["drm_fb_xrgb8888_to_rgb888<br/>into URB buffer"]
     G2 --> H2["one header + payload<br/>per remaining clip"]
     H2 --> H
-    C -->|rotation 90/180/270| I["rotate while converting<br/>send full destination"]
-    I --> H
     H --> J["fill trigger5_bulk_header<br/>0xfb, counter, offsets, size, checksum"]
     J --> K["trigger5_get_next_urb"]
     K --> L["usb_submit_urb on bulk OUT EP 0x01"]
@@ -168,14 +170,16 @@ Details:
   disjoint damage no longer inflates into a single screen-sized bounding box.
 - The adapter corrupts partial updates whose rows start or end on a 1- or
   2-pixel boundary; 4 pixels is the smallest clean alignment.
-- Rotation 90/180/270 always sends a full destination frame (partial updates
-  under rotation are not implemented).
+- Rotation 90/180/270 maps each damage clip from framebuffer space into panel
+  space, aligns it there, and sends it as a partial destination frame. Full
+  frames are still sent after enable, framebuffer changes and rotation
+  changes.
 
 ## 5. Rotation paths
 
 | Caller | Behaviour |
 |---|---|
-| KWin/Wayland or a compositor that sets the plane `rotation` property | Driver converts pixels and sends full frames. |
+| KWin/Wayland or a compositor that sets the plane `rotation` property | Driver rotates pixels per damage clip; clips are mapped to panel space and sent as partial frames. |
 | Xorg 1.21 modesetting | Ignores the plane rotation property and rotates in software. The plane stays at rotate-0; X's cursor/damage updates may not reach the driver correctly. |
 | X11 workaround | `full_frame_period_ms` forces a complete frame at most every N ms; `full_frame_always` forces one on every commit. Both are runtime module parameters. |
 
