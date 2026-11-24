@@ -222,7 +222,10 @@ int canvas_text_height(int scale)
 
 int canvas_text_width(int scale, const char *text)
 {
-	return (int)strlen(text) * 6 * scale;
+	int len = (int)strlen(text);
+
+	/* The last glyph has no trailing inter-character cell. */
+	return len > 0 ? len * 6 * scale - scale : 0;
 }
 
 void canvas_text(struct canvas *c, int x, int y, int scale, uint32_t color,
@@ -408,11 +411,20 @@ void pattern_block(struct canvas *c, int x, int y, int size, uint32_t color,
 	canvas_line(c, x + size - 1, y, x, y + size - 1, 0x00000000);
 	if (label) {
 		int scale = clamp_u((unsigned int)size / 40, 1, 3);
-		int tw = canvas_text_width(scale, label);
-		int th = canvas_text_height(scale);
+		int tw, th, tx, ty;
 
-		canvas_text(c, x + size / 2 - tw / 2, y + size / 2 - th / 2,
-			    scale, 0x00000000, label);
+		while (scale > 1 &&
+		       canvas_text_width(scale, label) > size - 2)
+			scale--;
+		tw = canvas_text_width(scale, label);
+		th = canvas_text_height(scale);
+		tx = x + size / 2 - tw / 2;
+		ty = y + size / 2 - th / 2;
+		if (tx < x + 1)
+			tx = x + 1;
+		if (ty < y + 1)
+			ty = y + 1;
+		canvas_text(c, tx, ty, scale, 0x00000000, label);
 	}
 }
 
