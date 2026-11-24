@@ -294,10 +294,13 @@ failed with `ENOSPC` after a rotated test.
 
 ## 9. Known current limitations
 
-- 1920×1080 is the only validated mode. 1024×768 mode-set packets succeed,
-  but the panel stays blank: Windows sends compressed frames (`flags=0x71`)
-  there, while Linux sends raw RGB888 (`flags=0x01`). The 0xA4 table/index
-  semantics are not fully decoded.
+- 1920×1080 is the fully validated desktop mode. 1024×768 displays through
+  `trigger5-tool --device-mode 3`; the KDE/X11 modesetting path is still pending
+  validation. The earlier blank-panel report was the adapter reset/settling
+  path, not compression.
+- Linux sends raw RGB888 (`flags=0x01`). The Windows Trigger 5 driver contains
+  a proprietary `EvoEncode` encoded-frame path (`flags=0x71` observed); it is
+  not implemented or decoded here. Trigger 6's JPEG path is different.
 - The cursor bulk type-2 bitmap/show/hide path is implemented and verified at
   1920×1080. The Windows bitmap and show/hide sequence are documented in
   `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.

@@ -238,7 +238,7 @@ RGB888 data.
 | 8 | 2 | `width` | low 13 bits: rectangle width |
 | 10 | 2 | `height` | low 13 bits: rectangle height |
 | 12 | 4 | `payload_length` | low 28 bits: `width * height * 3`; high 4 bits flags |
-| 16 | 1 | `flags` | `0x01` = uncompressed 24-bit RGB |
+| 16 | 1 | `flags` | `0x01` = uncompressed 24-bit RGB; Windows also uses `0x71` for its proprietary encoded path |
 | 17 | 1 | `unknown1` | 0 |
 | 18 | 1 | `unknown2` | 0 |
 | 19 | 1 | `checksum` | two's complement of the byte sum of offsets 0–18 |
@@ -329,8 +329,10 @@ animation runs.
 
 ## Caveats
 
-- The protocol has no compression. The Trigger 6 generation uses JPEG
-  (libturbojpeg) and a different daemon, which is not compatible.
+- Linux sends uncompressed 24-bit RGB (`flags=0x01`). The Windows Trigger 5
+  driver contains a proprietary `EvoEncode` encoded-frame path (`flags=0x71`
+  observed); the payload format is not decoded here. The Trigger 6 generation
+  uses JPEG (libturbojpeg) and a different daemon, which is not compatible.
 - EDID must be read while no bulk transfers are running; the adapter returns
   corrupt replies otherwise (`EDID block 0 … checksum is invalid`).
 - Unknown header/request fields are sent as observed; changing them may break

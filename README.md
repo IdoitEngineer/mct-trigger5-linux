@@ -244,6 +244,8 @@ trigger5.ko: convert damaged region to RGB888
 ```
 
 - The driver sends **uncompressed 24-bit RGB**, not JPEG (unlike Trigger 6).
+  The Windows Trigger 5 driver also has a proprietary `EvoEncode` compressed
+  path, which this driver does not implement.
 - Only damaged rectangles are sent in steady state. After a modeset, a new
   framebuffer, or a re-init, a **full frame** is pushed (local fix, see below).
 - The dongle buffers the frame in its own memory (Trigger 5 chips have 16 MB)
