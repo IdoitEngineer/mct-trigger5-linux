@@ -4,6 +4,14 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [Unreleased]
+
+### Changed
+
+- Corrected the 1024×768 status and the compression description: Linux sends
+  raw RGB888; the Windows Trigger 5 driver has a proprietary `EvoEncode`
+  encoded-frame path that is not implemented here.
+
 ## [1.0.6] - 2026-11-24
 
 ### Added
@@ -22,6 +30,9 @@ version follows the same `major.minor.patch` values.
 
 - Removed `linux-trigger5/trigger5-local.patch`; the tree is maintained
   directly and the local changes are documented in the READMEs.
+- Non-EDID modes matching the adapter's `0xA4` table now pass the table index
+  as the `SET_MODE` `wValue`, mirroring the Windows table path. EDID modes keep
+  the custom path.
 - `ci/test-install.sh`, `scripts/dkms-install-local.sh`, `install.sh` and
   `uninstall.sh` now derive the version instead of hard-coding it.
 - Documentation describes per-clip rotation damage and the measured bandwidth
@@ -34,6 +45,14 @@ version follows the same `major.minor.patch` values.
 - `trigger5-tool` retries `display_restore()` once and leaves the test
   framebuffer allocated if the restore still fails, instead of tearing down a
   framebuffer the CRTC may still scan out.
+- Reset0 is retried while the adapter settles after a mode change, avoiding
+  spurious `firmware reset failed: -121` errors.
+- The moving-block label no longer draws outside its damage rectangle, which
+  had left a one-pixel trail from the first character.
+- The `default_modes` sysfs attribute uses `sysfs_emit_at()` for subsequent
+  lines, avoiding an `invalid sysfs_emit` warning.
+- 1024×768 displays through `trigger5-tool --device-mode 3`; the KDE/X11
+  modesetting path is still pending validation.
 
 ## [1.0.5] - 2026-11-24
 
@@ -147,9 +166,10 @@ version follows the same `major.minor.patch` values.
 
 ### Known limitations
 
-- 1920×1080 is the only validated output mode. 1024×768 mode-set packets are
-  accepted but the panel stays blank; the Windows driver uses compressed
-  frames (`flags=0x71`) there, while Linux sends raw RGB888 (`flags=0x01`).
+- 1920×1080 is the only fully validated desktop mode. 1024×768 displays via
+  `trigger5-tool --device-mode 3` as of 1.0.6; the KDE/X11 modesetting path was
+  still pending validation. The earlier blank-panel report was the adapter
+  reset/settling path, not compression.
 - `trigger5-tool` still destroys the test framebuffer if `display_restore()`
   fails. Fixed in 1.0.6.
 
