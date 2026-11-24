@@ -1324,6 +1324,59 @@ static const u32 trigger5_cursor_formats[] = {
 	DRM_FORMAT_ARGB8888,
 };
 
+/*
+ * Whether the monitor EDID already provides this mode.  EDID modes keep the
+ * proven custom 0xC3 path; only forced device-table modes use wValue=index.
+ */
+static bool trigger5_mode_in_edid(struct trigger5_device *trigger5,
+				  const struct drm_display_mode *mode)
+{
+	struct drm_display_mode *m;
+	int refresh = drm_mode_vrefresh(mode);
+
+	list_for_each_entry(m, &trigger5->connector.modes, head) {
+		if (m->hdisplay == mode->hdisplay &&
+		    m->vdisplay == mode->vdisplay &&
+		    drm_mode_vrefresh(m) == refresh)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Return the adapter's 0xA4 table index for a mode, or 0 when it is not in
+ * the table.  The Windows driver uses the table path (wValue = index) for
+ * modes it knows and the custom path (wValue = 0) otherwise.
+ */
+static u16 trigger5_default_mode_index(struct trigger5_device *trigger5,
+				       const struct drm_display_mode *mode)
+{
+	unsigned int count, i;
+	int refresh;
+
+	if (trigger5->default_modes_len < 4)
+		return 0;
+
+	count = (trigger5->default_modes[0] << 8) |
+		trigger5->default_modes[1];
+	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
+		count = (trigger5->default_modes_len - 4) / 8;
+
+	refresh = drm_mode_vrefresh(mode);
+	for (i = 0; i < count; i++) {
+		const u8 *entry = trigger5->default_modes + 4 + i * 8;
+		u16 height = entry[4] | (entry[5] << 8);
+		u16 width = entry[6] | (entry[7] << 8);
+
+		if (width == mode->hdisplay && height == mode->vdisplay &&
+		    entry[0] == refresh)
+			return entry[3];
+	}
+
+	return 0;
+}
+
 static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                                        TRIGGER5_ATOMIC_COMMIT *state)
 {
@@ -1335,7 +1388,8 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        struct trigger5_mode_request request = {};
        u8 data[4];
        u64 clk;
-       int idx, ret;
+       u16 mode_index;
+       int idx, ret, i;
 
        if (!drm_dev_enter(crtc->dev, &idx))
                return;
@@ -1350,13 +1404,25 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
         */
        msleep(100);
 
-       /* Sequence recovered from USB captures. */
-       ret = usb_control_msg_recv(udev, 0,
-                                  TRIGGER5_REQUEST_FIRMWARE_RESET,
-                                  USB_DIR_IN | USB_TYPE_VENDOR |
-                                          USB_RECIP_DEVICE,
-                                  0x0000, 0x0000, data, 1,
-                                  USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+       /*
+        * Sequence recovered from USB captures.  Reset0 can return -121 while
+        * the adapter is still settling after the previous mode; retry it
+        * before giving up.
+        */
+       for (i = 0; i < 5; i++) {
+               ret = usb_control_msg_recv(udev, 0,
+                                          TRIGGER5_REQUEST_FIRMWARE_RESET,
+                                          USB_DIR_IN | USB_TYPE_VENDOR |
+                                                  USB_RECIP_DEVICE,
+                                          0x0000, 0x0000, data, 1,
+                                          USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+               if (!ret)
+                       break;
+               drm_dbg(&trigger5->drm,
+                       "firmware reset attempt %d failed: %d\n",
+                       i + 1, ret);
+               msleep(200);
+       }
        if (ret) {
                drm_err(&trigger5->drm, "firmware reset failed: %d\n", ret);
                goto err;
@@ -1395,10 +1461,17 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
                request.pll.prediv, request.pll.mul1, request.pll.mul2,
                request.pll.div1, request.pll.div2, clk, mode->clock);
 
+       mode_index = 0;
+       if (!trigger5_mode_in_edid(trigger5, mode))
+               mode_index = trigger5_default_mode_index(trigger5, mode);
+       drm_dbg(&trigger5->drm, "set mode %ux%u@%d table index %u\n",
+               mode->hdisplay, mode->vdisplay, drm_mode_vrefresh(mode),
+               mode_index);
+
        ret = usb_control_msg_send(udev, 0, TRIGGER5_REQUEST_SET_MODE,
                                   USB_DIR_OUT | USB_TYPE_VENDOR |
                                           USB_RECIP_DEVICE,
-                                  0, 0, &request, sizeof(request),
+                                  mode_index, 0, &request, sizeof(request),
                                   USB_CTRL_SET_TIMEOUT, GFP_KERNEL);
        if (ret) {
                drm_err(&trigger5->drm, "mode set failed: %d\n", ret);
