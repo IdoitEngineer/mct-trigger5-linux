@@ -11,10 +11,11 @@
 
 ## Branches and commits
 
-- `main` is the older baseline; current development is on `cursor-plane` or a feature branch.
+- `master` is the only branch and tracks `origin/master`; use a feature branch for larger work.
 - **ALWAYS ask before any `git push`.** Never treat a previous approval as standing permission for a later push, and never disable or override this rule.
 - Do not force-push. Use `--force` only when explicitly requested.
 - Never commit build artefacts (`*.ko`, `*.o`, `.deb`, `linux-trigger5/tools/trigger5-tool`); `.gitignore` covers most.
+- Never hand-edit the current version. Run `scripts/bump-version.sh X.Y.Z`; `VERSION` is the source of truth and `dkms.conf`, the Debian files and `DRIVER_PATCHLEVEL` must match it.
 - Keep `SPDX-License-Identifier: GPL-2.0-only` headers. Vendor binaries are proprietary and untracked.
 
 ## Verification (there is no unit-test suite)
@@ -35,11 +36,12 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 ## Driver constraints
 
 - Supports Linux **6.12+** (`BUILD_EXCLUSIVE_KERNEL_MIN` in `dkms.conf`). `trigger5.c` has guards for 6.12 and the 7.x API changes (7.2 `struct drm_atomic_commit`, 7.3 `atomic_create_state`). Do not remove them, and do not validate only against `uname -r`.
-- `trigger5.c` is a modified upstream v6 copy. Local changes must also be reflected in `linux-trigger5/trigger5-local.patch`; no script or CI check enforces this. Regenerate by reverse-applying the existing patch to the previous `trigger5.c` to reconstruct the v6 base, then `diff -u` the new file.
+- `trigger5.c` is a modified upstream v6 copy. The local changes are summarised in the READMEs; the tree is maintained directly, with no in-tree patch file. Keep the upstream v6 source or link elsewhere if you need to rebase it later.
 - EDID is read once at probe and cached. Never re-read EDID while bulk transfers are active: the adapter returns corrupt data and the connector loses its mode list.
+- The adapter's `0xA4` supported-mode table is read once at probe and exposed read-only as `default_modes` on the card device's sysfs node. Never re-read `0xA4` while streaming; it is informational and the monitor EDID is authoritative.
 - Rotation 90/180/270 is converted in the driver. Damage clips are mapped into panel space and sent as partial destination frames; full frames are still sent after enable, framebuffer changes and rotation changes. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; that is what `full_frame_period_ms` is for. Read the root README before changing damage/full-frame logic.
 - A USB transfer error latches `needs_reset` and stops I/O. Do **not** reintroduce `usb_queue_reset_device()`: it has taken down the whole xHCI controller. Recovery is replug or unbind/rebind.
-- Hardware cursor: the visible cursor is uploaded by the Windows driver as a **bulk type-2 packet** (64×64 ARGB, 16 KiB, then show/move/hide packets). The `0xC8` control writes (`0xE868` enable, `wValue=X`/`wIndex=Y` position, negative `value - 1`) are secondary. Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`; implement the bulk path before claiming cursor support. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
+- Hardware cursor: the visible cursor is uploaded by the Windows driver as a **bulk type-2 packet** (64×64 ARGB, 16 KiB, then show/move/hide packets). The `0xC8` control writes (`0xE868` enable, `wValue=X`/`wIndex=Y` position, negative `value - 1`) are secondary. Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`; implement the bulk path before claiming cursor support. See the private `windows-RE-trigger/CURSOR-BULK-PACKETS.md` notes (not shipped).
 
 ## Hardware and runtime gotchas
 
@@ -53,18 +55,19 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Current branch traps (verify before trusting docs)
 
-- The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver implements this bulk path (plus the `0xC8` writes); the cursor is hardware-verified at 1920x1080. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
+- The adapter **STALLs the `0xC8` cursor enable** (`wIndex=0xE868`, `-EPIPE`), but that is expected. The visible cursor is a 64×64 ARGB bitmap uploaded in a **bulk type-2 packet** (command 0), followed by type-2 show/move (command 3) and hide (command 5) packets. The Linux driver implements this bulk path (plus the `0xC8` writes); the cursor is hardware-verified at 1920x1080. See the private `windows-RE-trigger/CURSOR-BULK-PACKETS.md` notes (not shipped).
 - `trigger5-tool --portrait-left/right` now draws the card in **framebuffer orientation**, so the driver's plane rotation produces a genuine portrait bitmap (sideways on a landscape panel, upright on a rotated monitor).
 - 1920×1080 is the only validated mode. 1024×768 mode-set packets succeed but the panel stays blank; Windows sends compressed frames there (`flags=0x71`), while Linux sends raw RGB888. Do not advertise 1024×768 as working. The `0xD1 0x0001` display-disable has been removed; switching away from a blank 1024×768 can still fail until the adapter settles.
-- `trigger5-tool` restores the saved mode/FB/rotation atomically, but it still destroys the test framebuffer even when `display_restore()` fails. That cleanup bug is still open.
+- `trigger5-tool` restores the saved mode/FB/rotation atomically. If `display_restore()` fails it retries once; on continued failure it leaves the test framebuffer allocated rather than tearing down one the CRTC may still scan out.
 
 ## Packaging and CI
 
-- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.5_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
+- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.6_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
 - The package is DKMS-source only (`Architecture: all`). Keep the hand-written `debian/trigger5-dkms.postinst` and `prerm`: stock Debian/Ubuntu `dkms` lacks the `dh_dkms` addon.
 - `lintian` must stay clean; the `lint:debian` CI job builds and lints the package.
 - Containers share the host `uname -r`. `ci/test-install.sh` deliberately symlinks the host build tree and builds the distro kernel explicitly with `dkms -k <header-version>`; preserve that when editing CI.
 - GitLab jobs use the `tls-docker-runner` tag. Ubuntu 26.10 / 7.3 is a manual, non-blocking build.
+- Tag pipelines run `publish:package` (generic Package Registry) and `publish:release` (GitLab Release with the `.deb` asset link). The version in the tag must match the `.deb` filename.
 
 ## Docs
 
@@ -74,13 +77,14 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - `docs/usb-protocol.md` — request codes, mode-set payload, bulk header.
 - `docs/call-flow.md` — X11/tool → DRM → driver → USB → panel call and data flow.
 - `CHANGELOG.md` — release history and known limitations.
-- `windows-RE-trigger/` — local Ghidra export of the vendor Windows driver (ignored; proprietary vendor-derived material).
+- `VERSION` / `scripts/bump-version.sh` — version source and updater.
+- `windows-RE-trigger/` — private Ghidra export of the vendor Windows driver (ignored; proprietary vendor-derived material; not shipped).
 
 ## Agent skills
 
 ### Issue tracker
 
-Issues and specs live in GitLab Issues on `gitlab.beltarc.org/jeringa/mct-trigger5-linux`, managed with `glab`. See `docs/agents/issue-tracker.md`.
+Issues and specs live in GitLab Issues on `gitlab.beltarc.org/jeringa/mct-trigger5-linux`. Use the GitLab REST API with the project token in `.git-token` (never print it); `glab` may be stale. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

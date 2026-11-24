@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.5`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.6`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -25,7 +25,7 @@ driver.
 
 ## Local changes relative to upstream v6
 
-`trigger5.c` carries local fixes, captured in `trigger5-local.patch`:
+`trigger5.c` carries local fixes:
 
 1. **EDID is read once during probe and cached.** The adapter returns corrupt
    EDID replies (`checksum is invalid`) if the vendor read is issued while
@@ -38,7 +38,8 @@ driver.
 3. **Damage is clipped to the visible source rect**, and the latched
    `needs_reset` flag is cleared after a successful mode re-initialisation.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
-   rotated output is converted in the driver and sent as full frames.
+   damage clips are mapped into panel space and sent as partial frames, with
+   full frames after enable, framebuffer and rotation changes.
 5. **DRM cursor plane + cursor protocol work.** A 64×64 ARGB8888 cursor
    plane is exposed and `0xC8` enable/position writes are sent (enable register
    `0xE868`). Windows evidence shows the visible cursor is a 64×64 ARGB bitmap
@@ -51,6 +52,10 @@ driver.
 6. **No automatic USB reset after a transfer error.** Resetting the adapter
    could take down the whole xHCI controller, so the driver now latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.
+7. **Adapter default-mode table.** The `0xA4` supported-mode list is read once
+   at probe and exposed read-only as `default_modes` on the card device's
+   sysfs node; `trigger5-tool probe` prints it. It is informational and the
+   monitor EDID remains authoritative.
 
 These are local workarounds until the driver lands upstream.
 
@@ -123,7 +128,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.5_all.deb`.
+`trigger5-dkms_1.0.6_all.deb`.
 
 Manual build if you prefer:
 

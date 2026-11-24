@@ -26,7 +26,8 @@ There are three distinct channels:
 | USB control + bulk | `trigger5.ko` only | firmware reset, mode programming, registers, cursor, pixels |
 
 Userspace never speaks the vendor protocol. In particular `trigger5-tool
-probe` is read-only and does not issue `0xA1`/`0xA4`/`0xA7`/`0xC8`.
+probe` is read-only and does not issue `0xA1`/`0xA4`/`0xA7`/`0xC8`; it reads the
+driver's cached `0xA4` table from sysfs.
 
 ## 2. Probe and initial console mode
 
@@ -45,6 +46,8 @@ sequenceDiagram
     P->>D: CRTC / encoder / connector init
     P->>A: 0xA8 EDID block(s)
     P->>P: trigger5_get_cached_edid
+    P->>A: 0xA4 supported-mode table
+    P->>P: trigger5_read_default_modes
     P->>D: drm_dev_register
     D->>F: drm_client_setup / fbdev
     F->>D: atomic mode set (preferred 1920x1080)
@@ -68,6 +71,9 @@ Key functions:
 - `trigger5_detect()` — `0xA6` status request; returns unknown on failure, but
   the cached EDID still supplies modes.
 - `trigger5_connector_get_modes()` — reuses the cached EDID; never re-reads it.
+- `trigger5_read_default_modes()` — reads the adapter's `0xA4` table once at
+  probe and exposes it as the card device's `default_modes` sysfs file. It is
+  informational; the monitor EDID remains authoritative.
 
 ## 3. Mode set / display enable
 
@@ -240,7 +246,8 @@ main
      -> probe_usb()          libusb descriptors, strings, config/interface/endpoint
      -> probe_module()       /sys/module/trigger5/parameters
      -> probe_drm()          /dev/dri/card*, driver name "trigger5"
-        -> probe_drm_card()  connector/modes/EDID, CRTCs, planes, properties
+        -> probe_drm_card()  connector/modes/EDID, device default modes,
+                             CRTCs, planes, properties
      -> probe_drm_sysfs()    /sys/class/drm/*/status, enabled, dpms
 ```
 

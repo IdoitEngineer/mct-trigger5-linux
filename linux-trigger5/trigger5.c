@@ -3,6 +3,7 @@
 #include <linux/array_size.h>
 #include <linux/atomic.h>
 #include <linux/completion.h>
+#include <linux/device.h>
 #include <linux/err.h>
 #include <linux/iosys-map.h>
 #include <linux/jiffies.h>
@@ -13,6 +14,7 @@
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/usb.h>
 #include <linux/version.h>
@@ -71,11 +73,12 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      5
+#define DRIVER_PATCHLEVEL      6
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
 #define TRIGGER5_MAX_FRAME_SIZE        SZ_8M
+#define TRIGGER5_DEFAULT_MODES_MAX     420
 
 struct trigger5_transfer {
        struct trigger5_device *trigger5;
@@ -122,6 +125,14 @@ struct trigger5_device {
         * reading it while bulk transfers are running returns corrupt data.
         */
        const struct drm_edid *edid;
+
+       /*
+        * The adapter's own 0xA4 supported-mode table. Informational only:
+        * the driver accepts custom modes and the monitor EDID is
+        * authoritative. Read once at probe, like the EDID.
+        */
+       u8 default_modes[TRIGGER5_DEFAULT_MODES_MAX];
+       int default_modes_len;
 
        int next_transfer;
        struct trigger5_transfer transfers[TRIGGER5_NUM_URBS];
@@ -205,6 +216,7 @@ struct trigger5_cursor_header {
 #define TRIGGER5_CURSOR_SHAPE_ARROW    0x10
 
 #define TRIGGER5_REQUEST_KEEPALIVE             0x91
+#define TRIGGER5_REQUEST_GET_MODES             0xA4
 #define TRIGGER5_REQUEST_GET_REGISTER          0xA5
 #define TRIGGER5_REQUEST_GET_STATUS            0xA6
 #define TRIGGER5_REQUEST_GET_EDID              0xA8
@@ -1571,11 +1583,79 @@ static int trigger5_read_edid(void *data, u8 *buf, unsigned int block,
 }
 
 /*
+ * The adapter has its own supported-mode table (0xA4).  It is informational
+ * only: the monitor EDID is authoritative.  Read it once while the bulk
+ * stream is stopped, for the same reason as the EDID.
+ */
+static void trigger5_read_default_modes(struct trigger5_device *trigger5)
+{
+	struct usb_device *udev = interface_to_usbdev(trigger5->intf);
+	int ret;
+
+	ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
+			      TRIGGER5_REQUEST_GET_MODES,
+			      USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+			      0, 0, trigger5->default_modes,
+			      sizeof(trigger5->default_modes),
+			      USB_CTRL_GET_TIMEOUT);
+	if (ret < 4) {
+		trigger5->default_modes_len = 0;
+		return;
+	}
+
+	trigger5->default_modes_len = ret;
+}
+
+/*
+ * Text form: a count line followed by "index width height refresh timing bpp".
+ * The probe tool parses this; keep the format stable.
+ */
+static ssize_t default_modes_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct trigger5_device *trigger5 = dev_get_drvdata(dev);
+	unsigned int count, i;
+	ssize_t n = 0;
+
+	if (!trigger5 || trigger5->default_modes_len < 4)
+		return sysfs_emit(buf, "count 0\n");
+
+	count = (trigger5->default_modes[0] << 8) |
+		trigger5->default_modes[1];
+	if (count > (unsigned int)((trigger5->default_modes_len - 4) / 8))
+		count = (trigger5->default_modes_len - 4) / 8;
+
+	n += sysfs_emit(buf + n, "count %u\n", count);
+	for (i = 0; i < count; i++) {
+		const u8 *entry = trigger5->default_modes + 4 + i * 8;
+		u16 height = entry[4] | (entry[5] << 8);
+		u16 width = entry[6] | (entry[7] << 8);
+
+		n += sysfs_emit(buf + n, "%u %u %u %u %u %u\n",
+				entry[3], width, height,
+				entry[0], entry[1], entry[2]);
+	}
+
+	return n;
+}
+static DEVICE_ATTR_RO(default_modes);
+
+static struct attribute *trigger5_default_modes_attrs[] = {
+	&dev_attr_default_modes.attr,
+	NULL,
+};
+
+static const struct attribute_group trigger5_default_modes_group = {
+	.attrs = trigger5_default_modes_attrs,
+};
+
+/*
  * Return the EDID read at probe time, reading it once if that failed.
  * It must never be re-read while the frame stream is active: the adapter
  * returns corrupt control replies then, which the DRM EDID parser rejects
  * ("checksum is invalid") and the connector loses its mode list.
  */
+
 static const struct drm_edid *
 trigger5_get_cached_edid(struct trigger5_device *trigger5)
 {
@@ -1794,6 +1874,9 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                msleep(20);
        }
 
+       /* Informational 0xA4 table; also read before streaming starts. */
+       trigger5_read_default_modes(trigger5);
+
        ret = drm_encoder_init(dev, &trigger5->encoder, &trigger5_encoder_funcs,
                               is_hdmi ? DRM_MODE_ENCODER_TMDS :
                                         DRM_MODE_ENCODER_DAC, NULL);
@@ -1819,6 +1902,13 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        drm_mode_config_reset(dev);
 
        usb_set_intfdata(interface, trigger5);
+
+       ret = devm_device_add_group(&interface->dev,
+                                   &trigger5_default_modes_group);
+       if (ret)
+               drm_warn(&trigger5->drm,
+                        "failed to create default_modes attribute: %d\n",
+                        ret);
 
        drm_kms_helper_poll_init(dev);
 

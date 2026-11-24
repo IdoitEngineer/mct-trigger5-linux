@@ -135,6 +135,7 @@ static int run_test(struct test_options *opt)
 	bool canvas_ready = false, fb_ready = false;
 	bool cursor_fb_ready = false, cursor_ready = false;
 	bool mode_set = false;
+	bool keep_fb = false;
 	double last_cursor_move = -1.0;
 	int old_bx = -1, old_by = -1;
 	int hot_x = 0, hot_y = 0;
@@ -331,14 +332,24 @@ static int run_test(struct test_options *opt)
 out_close:
 	if (cursor_ready)
 		display_cursor_hide(&d);
-	if (mode_set && opt->restore)
-		display_restore(&d);
+	if (mode_set && opt->restore) {
+		if (display_restore(&d)) {
+			sleep_ms(100);
+			if (display_restore(&d)) {
+				fprintf(stderr,
+					"warning: could not restore the previous mode;\n"
+					"         leaving the test framebuffer allocated.\n"
+					"         Replug the adapter or switch VT to recover.\n");
+				keep_fb = true;
+			}
+		}
+	}
 
 	if (canvas_ready)
 		canvas_exit(&canvas);
 	if (cursor_fb_ready)
 		dumb_fb_destroy(&d, &cursor_fb);
-	if (fb_ready)
+	if (fb_ready && !keep_fb)
 		dumb_fb_destroy(&d, &fb);
 	display_close(&d);
 

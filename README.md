@@ -22,9 +22,9 @@ the vendor binaries are proprietary and not covered — see
 | `linux-trigger5/tools/` | `trigger5-tool`: read-only USB/DRM probe plus a KMS test pattern, rotation and hardware-cursor exerciser. See [`linux-trigger5/tools/README.md`](linux-trigger5/tools/README.md). |
 | `docs/usb-protocol.md` | USB protocol specification: descriptors, control requests, mode-set payload, bulk frame header and throughput maths. |
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
+| `VERSION` | Current package version; update with `scripts/bump-version.sh`. |
 | `CHANGELOG.md` | Release history and known limitations. |
-| `windows-RE-trigger/` | Local Ghidra reverse-engineering export of the vendor Windows driver pair (proprietary; not covered by the project licence). |
-| `trigger5-dkms_1.0.5_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.6_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -33,7 +33,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20.
-- Driver installed via DKMS as `trigger5/1.0.5`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.6`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; rotated frames are
   converted in the driver and sent as full-frame updates.
@@ -94,9 +94,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0.5_all.deb
-../trigger5_1.0.5_amd64.changes
-../trigger5_1.0.5_amd64.buildinfo
+../trigger5-dkms_1.0.6_all.deb
+../trigger5_1.0.6_amd64.changes
+../trigger5_1.0.6_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -109,9 +109,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0.5_all.deb
+sudo apt install ./trigger5-dkms_1.0.6_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0.5_all.deb
+sudo dpkg -i trigger5-dkms_1.0.6_all.deb
 ```
 
 Typical end-to-end:
@@ -119,7 +119,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0.5_all.deb
+sudo apt install ../trigger5-dkms_1.0.6_all.deb
 sudo reboot
 ```
 
@@ -321,7 +321,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0.5`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.6`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -331,7 +331,7 @@ driver never calls `request_firmware()`.
 - **`evdi` is not required.** `trigger5` is a standalone DRM driver; the
   `evdi-dkms` package is only needed by MCT's Trigger 6 userspace daemon.
 
-### Local changes (captured in `trigger5-local.patch`)
+### Local changes relative to upstream v6
 
 1. **EDID read once at probe, cached.** The adapter corrupts the EDID control
    reply if it arrives while bulk transfers are running (`EDID block 0 …
@@ -340,22 +340,27 @@ driver never calls `request_firmware()`.
 2. **Full frame after enable, framebuffer change or rotation change.**
    Prevents stale rows when X allocates a new framebuffer or the plane rotation
    changes.
-3. **Damage clipped to the visible source rect**, and the latched
-   `needs_reset` flag cleared after a successful mode re-init.
+3. **Damage clipped to the visible source rect and aligned to 4 pixels**, and
+   the latched `needs_reset` flag cleared after a successful mode re-init.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
-   non-zero rotations are converted in the driver and sent as full frames.
+   damage rectangles are mapped into panel space and sent as partial frames,
+   with full frames after enable, framebuffer and rotation changes.
 5. **DRM cursor plane + cursor protocol work.** The driver exposes a 64×64
    ARGB8888 cursor plane and sends the `0xC8` enable/position writes. The
    Windows capture shows that the visible cursor is actually a 64×64 ARGB
    bitmap uploaded in a **bulk type-2 packet**, followed by type-2 show/hide
    packets; `0xC8` alone does not display it. The Linux driver now uploads the
    bitmap and sends the type-2 packets as well; the cursor is verified at
-   1920×1080. See `windows-RE-trigger/CURSOR-BULK-PACKETS.md`. Cursor requests are
+   1920×1080. Cursor requests are
    gated on the display being configured, and a failed enable is latched rather
    than retried on every move.
 6. **No automatic USB reset after a transfer error.** A USB port reset could
    take the whole xHCI controller down with it, so the driver latches the
    error, stops I/O, and asks for a replug or unbind/rebind instead.
+7. **Adapter default-mode table.** The `0xA4` supported-mode list is read once
+   at probe and exposed read-only as `default_modes` on the card device's
+   sysfs node; `trigger5-tool probe` prints it. It is informational; the
+   monitor EDID remains authoritative.
 
 ### Cursor
 
@@ -367,7 +372,7 @@ Windows continues regardless.
 The Linux driver uploads the same 64×64 ARGB bitmap and sends type-2 show/move
 and hide packets, in addition to the `0xC8` control writes. This is verified at
 1920×1080. The RE notes and extracted bitmaps are in
-`windows-RE-trigger/CURSOR-BULK-PACKETS.md`.
+the private reverse-engineering notes (not shipped with this repository).
 
 With native plane rotation (a compositor that sets the plane rotation
 property) the cursor is still positioned by the driver; with X’s software
@@ -381,7 +386,12 @@ These are local until the driver lands upstream.
 
 The primary plane advertises `DRM_MODE_ROTATE_0/90/180/270`. Compositors that
 use the DRM plane rotation property (for example KWin on Wayland) rotate
-natively; the driver converts the pixels and sends full frames while rotated.
+natively; the driver converts pixels per damage clip, maps each clip into panel
+space and sends only the dirty rectangles. A full frame is still sent after a
+modeset, framebuffer change or rotation change.
+
+Measured on hardware with the animated test card, damage updates use roughly
+2–4 Mbit/s, compared with 12–18 Mbit/s for full-frame updates.
 
 Xorg 1.21's modesetting driver does **not** use the plane property; it rotates
 in software. The plane then stays at rotate-0, and X's cursor damage never
@@ -425,6 +435,11 @@ Read-only probe (safe with X running):
 linux-trigger5/tools/trigger5-tool probe
 linux-trigger5/tools/trigger5-tool probe --json
 ```
+
+The probe also prints the adapter's own `0xA4` supported-mode table as
+“device default modes”, next to the monitor EDID modes. The driver reads it
+once at probe and exposes it read-only via the card device's `default_modes`
+sysfs file.
 
 Display and cursor tests need DRM master, so run them from a text console or
 with the display manager stopped:
@@ -594,6 +609,21 @@ module. Containers share the host kernel, so the distro kernel build is done
 with an explicit `dkms -k <header-version>`; the package `postinst` is exercised
 against the host version with a symlinked build tree.
 
+## Release versioning
+
+`VERSION` is the source of truth for the package version. Update every current
+version reference with:
+
+```sh
+scripts/bump-version.sh X.Y.Z "short summary for debian/changelog"
+```
+
+The script updates `VERSION`, `dkms.conf`, `DRIVER_PATCHLEVEL`, the Debian
+source paths and scripts, the READMEs and `AGENTS.md`, and prepends a
+`debian/changelog` entry. `CHANGELOG.md` stays curated by hand. Derive the
+version from the `.deb` filename or `dkms.conf` in scripts and CI; never
+hard-code it.
+
 ## CI
 
 `.gitlab-ci.yml` runs the same stock-distribution checks on the GitLab Docker
@@ -607,6 +637,12 @@ runners:
 | `test:install-debian-6.12` | debian:trixie | DKMS install + verification |
 | `test:install-ubuntu-7.0` | ubuntu:26.04 | DKMS install + verification |
 | `build:ubuntu-7.3` | ubuntu:26.10 | 7.3.x (manual, non-blocking) |
+| `publish:package` | debian:trixie | tag only: upload the `.deb` to the Package Registry |
+| `publish:release` | release-cli | tag only: create a GitLab Release with the `.deb` asset link |
+
+Tag pipelines also publish the `.deb` permanently to the generic Package
+Registry and attach it to a GitLab Release. Pipeline artifacts expire after a
+week; the Package Registry copy is the durable download.
 
 ## Troubleshooting
 
@@ -615,12 +651,12 @@ runners:
 | No `card1` after boot | `lsmod \| grep trigger5`; `sudo dmesg \| grep -i trigger5`; check `/etc/modules` contains `trigger5`. |
 | Module won't unload | It is in use by X/DRM. Stop the display manager or reboot. |
 | Panel stays black | Check `cat /sys/class/drm/card*-VGA-1/status`; try `xrandr --output VGA-1-1 --auto`. |
-| Output falls back to 1024×768 / `0mm x 0mm` | EDID read failed. The patched driver caches the EDID; if it still happens, replug the dongle or `sudo modprobe -r trigger5 && sudo modprobe trigger5`. |
+| Output falls back to 1024×768 / `0mm x 0mm` | EDID read failed. The driver caches the EDID; if it still happens, replug the dongle or `sudo modprobe -r trigger5 && sudo modprobe trigger5`. |
 | `EDID … checksum is invalid` in dmesg | Same race; fixed by the cached-EDID change. |
-| Garbled / stale picture after rotation | Native rotation sends full frames. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
+| Garbled / stale picture after rotation | Native rotation sends per-clip partial frames aligned to 4 pixels in panel space. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.5_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.6_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 
@@ -665,7 +701,8 @@ GPL compatibility is expected regardless.
 Provenance: the copy here came from the public dri-devel patch series. The
 mail-archive line wrapping and tab expansion were repaired, soft-wrapped lines
 were rejoined, and an obfuscated `MODULE_AUTHOR` address was restored. The
-functional changes are isolated in `linux-trigger5/trigger5-local.patch`.
+functional changes are listed above; the tree is maintained directly rather
+than as a patch series.
 
 ### Our work: GPL-2.0-only
 
@@ -692,8 +729,10 @@ Last verified: 2026-11-20.
 | Ubuntu 26.04 LTS (Docker + CI) | 7.0.x | module compile, `.deb`, DKMS install, verification (CI job passed) |
 | Ubuntu 26.10 (optional CI job) | 7.3.x | compile |
 
-GitLab pipeline `420` passed on 2026-11-20 for commit `eb8d64b` (lint, Debian
-6.12 build + DKMS install, Ubuntu 7.0 build + DKMS install).
+The current `master` pipeline runs the same checks: lint and `.deb` build,
+Debian 6.12 build + DKMS install, and Ubuntu 7.0 build + DKMS install. Tag
+pipelines additionally publish the `.deb` to the Package Registry and create a
+GitLab Release.
 
 Minimum supported kernel: **6.12**. Stock distribution defaults below that are
 not supported (Debian 12 / 6.1, Ubuntu 24.04 GA / 6.8); DKMS skips them via
