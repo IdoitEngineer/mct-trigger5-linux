@@ -7,5 +7,6 @@
 #include <stdbool.h>
 
 int cmd_probe(bool json);
+int cmd_params(int argc, char **argv);
 
 #endif /* TRIGGER5_PROBE_H */

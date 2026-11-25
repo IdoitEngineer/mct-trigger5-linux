@@ -382,12 +382,15 @@ static void usage(const char *argv0)
 	       "            [--seconds N] [--no-animate] [--full]\n"
 	       "            [--no-cursor] [--no-restore] [--damage-align N]\n"
 	       "  %s cursor [--seconds N]\n"
+	       "  %s params [NAME[=VALUE] ...]\n"
 	       "\n"
 	       "probe   read-only: USB descriptors, sysfs, module parameters and\n"
 	       "        DRM/KMS objects. Can run while X is active.\n"
 	       "test    claim DRM master and show the test pattern. Requires a text\n"
 	       "        console or a stopped display manager.\n"
 	       "cursor  shortcut for a landscape run focused on cursor movement.\n"
+	       "params  list module parameters, read one, or set NAME=VALUE\n"
+	       "        (writes need root).\n"
 	       "\n"
 	       "Rotation flags are separate on purpose: --portrait-left uses DRM\n"
 	       "rotate-90 (counter-clockwise), --portrait-right uses rotate-270.\n"
@@ -395,7 +398,7 @@ static void usage(const char *argv0)
 	       "test --device-mode selects an entry from the adapter's 0xA4 table\n"
 	       "by index or resolution; --list-modes prints both mode lists and\n"
 	       "does not require DRM master.\n",
-	       argv0, argv0, argv0);
+	       argv0, argv0, argv0, argv0);
 }
 
 static int parse_test_args(int argc, char **argv, struct test_options *opt,
@@ -476,6 +479,9 @@ int main(int argc, char **argv)
 
 		return cmd_probe(json);
 	}
+
+	if (!strcmp(cmd, "params"))
+		return cmd_params(argc - 2, argv + 2);
 
 	if (!strcmp(cmd, "test") || !strcmp(cmd, "cursor")) {
 		int rc = parse_test_args(argc - 2, argv + 2, &opt,

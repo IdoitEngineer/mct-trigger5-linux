@@ -1,12 +1,11 @@
 # Issue tracker: GitLab
 
-Issues and specs for this repo live as GitLab issues in
-`gitlab.example.com/jeringa/mct-trigger5-linux`.
+Issues and specs for this repo live in the project's GitLab issue tracker;
+infer the host and path from `git remote -v`.
 
-Use the GitLab REST API with the project token in `.git-token` (never print
-it) rather than `glab`; the `glab` token in this environment may be stale. The
-commands below are shown with `glab` for reference, but `curl` with
-`PRIVATE-TOKEN` against `/api/v4/projects/:id/...` is the supported path.
+Use `glab`, or the GitLab REST API with a token from your environment; never
+commit tokens to the repository. The commands below use `glab`; on a GitHub
+mirror, substitute the equivalent `gh` commands and GitHub Issues.
 
 ## Conventions
 

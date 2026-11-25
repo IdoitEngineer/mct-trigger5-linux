@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.7`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.8`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -32,9 +32,9 @@ driver.
    bulk frame transfers are running. `get_modes` now reuses the cached EDID
    instead of re-reading it, so a re-probe (e.g. when rotating the output) can
    no longer wipe the connector's mode list.
-2. **A full frame is pushed after a modeset, a rotation change, or when the
-   framebuffer changes.** Previously only damaged rects were sent, leaving
-   stale rows on the panel.
+2. **A full frame is pushed after a modeset, a rotation change, or (in the
+   default userspace-damage mode) a framebuffer change.** Previously only
+   damaged rects were sent, leaving stale rows on the panel.
 3. **Damage is clipped to the visible source rect**, and the latched
    `needs_reset` flag is cleared after a successful mode re-initialisation.
 4. **Native plane rotation (0/90/180/270).** The plane advertises DRM rotation;
@@ -56,6 +56,10 @@ driver.
    at probe and exposed read-only as `default_modes` on the card device's
    sysfs node; `trigger5-tool probe` prints it. It is informational and the
    monitor EDID remains authoritative.
+8. **Optional driver-side damage.** `self_damage=1` keeps a shadow copy of the
+   last sent frame and sends only changed 64×64 tiles. The framebuffer `.dirty`
+   callback drops userspace clips in this mode, avoiding Xorg software-rotation
+   invalid rectangles; the default path remains userspace damage.
 
 These are local workarounds until the driver lands upstream.
 
@@ -67,9 +71,16 @@ These are local workarounds until the driver lands upstream.
 - `full_frame_period_ms` (uint, default 0 = off): keep damage updates but force
   a complete frame at most once per period. `100`–`250` is a practical X11
   software-rotation setting; the cursor reappears and corruption self-heals.
+- `self_damage` (bool, default 0): compare each incoming frame with a
+  driver-side shadow copy and send only changed tiles. It ignores userspace
+  damage clips; in this mode the framebuffer `.dirty` callback drops X's clips,
+  which avoids Xorg software-rotation invalid rectangles. It costs ~8.3 MB at
+  1920×1080 and scans the frame on each commit, but idle traffic drops to zero.
+  The `.dirty` callback covers Xorg's `drmModeDirtyFB` path; an atomic client
+  that sets `FB_DAMAGE_CLIPS` directly bypasses it.
 
-Both are writable at runtime:
-`/sys/module/trigger5/parameters/{full_frame_always,full_frame_period_ms}`.
+All three are writable at runtime:
+`/sys/module/trigger5/parameters/{full_frame_always,full_frame_period_ms,self_damage}`.
 
 ## Why the vendor package does not work here
 
@@ -128,7 +139,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.7_all.deb`.
+`trigger5-dkms_1.0.8_all.deb`.
 
 Manual build if you prefer:
 

@@ -534,6 +534,106 @@ static void probe_module(bool json)
 		printf("}}");
 }
 
+/*
+ * Read or write the trigger5 module parameters.  With no arguments, list all
+ * parameters; NAME reads one; NAME=VALUE writes it.  Writes need root.
+ */
+int cmd_params(int argc, char **argv)
+{
+	const char *dir = "/sys/module/trigger5/parameters";
+	int ret = EXIT_SUCCESS;
+	int i;
+
+	if (access("/sys/module/trigger5", F_OK) < 0) {
+		fprintf(stderr, "trigger5 module is not loaded\n");
+		return EXIT_FAILURE;
+	}
+
+	if (argc == 0) {
+		DIR *d = opendir(dir);
+		struct dirent *de;
+
+		if (!d) {
+			fprintf(stderr, "%s: %s\n", dir, strerror(errno));
+			return EXIT_FAILURE;
+		}
+		while ((de = readdir(d))) {
+			char path[512], buf[512];
+
+			if (de->d_name[0] == '.')
+				continue;
+			snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+			if (read_path(path, buf, sizeof(buf)) < 0)
+				continue;
+			printf("%s = %s\n", de->d_name, buf);
+		}
+		closedir(d);
+		return EXIT_SUCCESS;
+	}
+
+	for (i = 0; i < argc; i++) {
+		char name[128], path[512], buf[512];
+		const char *arg = argv[i];
+		const char *eq = strchr(arg, '=');
+		size_t len = eq ? (size_t)(eq - arg) : strlen(arg);
+		size_t value_len;
+		const char *value = eq ? eq + 1 : NULL;
+		int fd;
+
+		if (len == 0 || len >= sizeof(name)) {
+			fprintf(stderr, "invalid parameter '%s'\n", arg);
+			ret = EXIT_FAILURE;
+			continue;
+		}
+		memcpy(name, arg, len);
+		name[len] = '\0';
+
+		if (name[strspn(name,
+				"abcdefghijklmnopqrstuvwxyz"
+				"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")] != '\0') {
+			fprintf(stderr, "invalid parameter name '%s'\n", name);
+			ret = EXIT_FAILURE;
+			continue;
+		}
+
+		snprintf(path, sizeof(path), "%s/%s", dir, name);
+
+		if (!value) {
+			if (read_path(path, buf, sizeof(buf)) < 0) {
+				fprintf(stderr, "%s: %s\n", path, strerror(errno));
+				ret = EXIT_FAILURE;
+				continue;
+			}
+			printf("%s = %s\n", name, buf);
+			continue;
+		}
+
+		value_len = strlen(value);
+		fd = open(path, O_WRONLY | O_CLOEXEC);
+		if (fd < 0) {
+			fprintf(stderr, "%s: %s\n", path, strerror(errno));
+			ret = EXIT_FAILURE;
+			continue;
+		}
+		if (write(fd, value, value_len) != (ssize_t)value_len) {
+			fprintf(stderr, "%s: %s\n", path, strerror(errno));
+			close(fd);
+			ret = EXIT_FAILURE;
+			continue;
+		}
+		close(fd);
+
+		if (read_path(path, buf, sizeof(buf)) < 0) {
+			fprintf(stderr, "%s: %s\n", path, strerror(errno));
+			ret = EXIT_FAILURE;
+			continue;
+		}
+		printf("%s = %s\n", name, buf);
+	}
+
+	return ret;
+}
+
 static const char *plane_type_name(uint64_t type, char *buf, size_t len)
 {
 	switch (type) {

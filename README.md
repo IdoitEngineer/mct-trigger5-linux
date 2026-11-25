@@ -24,7 +24,7 @@ the vendor binaries are proprietary and not covered — see
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
 | `VERSION` | Current package version; update with `scripts/bump-version.sh`. |
 | `CHANGELOG.md` | Release history and known limitations. |
-| `trigger5-dkms_1.0.7_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.8_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -34,7 +34,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20, and
   1024×768 via both `trigger5-tool` and KDE/xrandr on 2026‑11‑25.
-- Driver installed via DKMS as `trigger5/1.0.7`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.8`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; damage rectangles are
   mapped into panel space and sent as partial frames, with full frames after
@@ -96,9 +96,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0.7_all.deb
-../trigger5_1.0.7_amd64.changes
-../trigger5_1.0.7_amd64.buildinfo
+../trigger5-dkms_1.0.8_all.deb
+../trigger5_1.0.8_amd64.changes
+../trigger5_1.0.8_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -111,9 +111,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0.7_all.deb
+sudo apt install ./trigger5-dkms_1.0.8_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0.7_all.deb
+sudo dpkg -i trigger5-dkms_1.0.8_all.deb
 ```
 
 Typical end-to-end:
@@ -121,7 +121,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0.7_all.deb
+sudo apt install ../trigger5-dkms_1.0.8_all.deb
 sudo reboot
 ```
 
@@ -279,8 +279,9 @@ rate, independently of USB throughput. Trigger 5 chips such as the T5-302 have
 Consequences:
 
 - normal operation only sends damaged rectangles (cheap updates);
-- a region that is never repainted stays on screen — the local fix forces one
-  full-frame update after a modeset/new framebuffer.
+- a region that is never repainted stays on screen — the driver forces a full
+  update after a modeset, and after a new framebuffer in the default
+  userspace-damage mode.
 
 ### Throughput and realistic frame rate
 
@@ -297,6 +298,10 @@ rate is about **45–55 fps**. That is borderline for full-screen 60 Hz motion
 but more than enough for desktop use, where only damaged areas are transferred.
 The driver rejects modes whose frame would exceed 8 MiB, so 1920×1080 fits while
 2560×1440 and 4K do not.
+
+With `self_damage=1`, idle desktop traffic drops to zero and animated content
+sends only changed 64×64 tiles. The trade-off is a one-frame shadow (~8.3 MB at
+1080p) and a frame scan per commit.
 
 ## Firmware: on the dongle, not on the host
 
@@ -325,7 +330,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0.7`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.8`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -406,8 +411,12 @@ reaches the driver, so:
   duplicate can return);
 - `full_frame_always=1` — corruption correct, but every commit sends
   a full 1080p frame, which is very slow over USB;
-- `full_frame_period_ms=N` — recommended X11 compromise: damage updates plus a
-  full frame at most every N ms, so the cursor reappears and corruption heals.
+- `full_frame_period_ms=N` — damage updates plus a full frame at most every
+  N ms, so the cursor reappears and corruption heals;
+- `self_damage=1` — the driver compares each frame with a shadow copy and sends
+  only changed tiles. This bypasses X's invalid software-rotation damage clips
+  and avoids full frames on page flips; it costs ~8.3 MB and a frame scan per
+  commit.
 
 ```sh
 # X11 software rotation: ~7 full frames/s, damage updates in between
@@ -416,8 +425,17 @@ echo 150 | sudo tee /sys/module/trigger5/parameters/full_frame_period_ms
 echo 0 | sudo tee /sys/module/trigger5/parameters/full_frame_period_ms  # off
 ```
 
-`full_frame_always` and `full_frame_period_ms` are runtime module parameters
-(`/sys/module/trigger5/parameters/`), so no rebuild is needed to change them.
+`full_frame_always`, `full_frame_period_ms` and `self_damage` are runtime
+module parameters (`/sys/module/trigger5/parameters/`), so no rebuild is
+needed to change them. Set them before starting X:
+
+```sh
+sudo modprobe -r trigger5
+sudo modprobe trigger5 self_damage=1
+```
+
+or persistently with `options trigger5 self_damage=1` in
+`/etc/modprobe.d/trigger5.conf`.
 
 ---
 
@@ -444,6 +462,18 @@ The probe also prints the adapter's own `0xA4` supported-mode table as
 “device default modes”, next to the monitor EDID modes. The driver reads it
 once at probe and exposes it read-only via the card device's `default_modes`
 sysfs file.
+
+Read or change the driver's module parameters with the same tool:
+
+```sh
+trigger5-tool params                       # list
+trigger5-tool params self_damage           # read one
+sudo trigger5-tool params self_damage=1    # write (root)
+sudo trigger5-tool params full_frame_period_ms=150
+```
+
+The writable tunables are `self_damage`, `full_frame_always` and
+`full_frame_period_ms`.
 
 Display and cursor tests need DRM master, so run them from a text console or
 with the display manager stopped:
@@ -657,6 +687,10 @@ Tag pipelines also publish the `.deb` permanently to the generic Package
 Registry and attach it to a GitLab Release. Pipeline artifacts expire after a
 week; the Package Registry copy is the durable download.
 
+The `tls-docker-runner` tag is specific to the current self-hosted GitLab
+runner. When mirroring to gitlab.com or GitHub, replace or remove that tag and
+add an equivalent CI workflow for the target host.
+
 ## Troubleshooting
 
 | Symptom | Check / fix |
@@ -669,7 +703,7 @@ week; the Package Registry copy is the durable download.
 | Garbled / stale picture after rotation | Native rotation sends per-clip partial frames aligned to 4 pixels in panel space. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.7_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.8_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 

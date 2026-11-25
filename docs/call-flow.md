@@ -136,7 +136,9 @@ flowchart TD
     A["state = new plane state"] --> B{"fb and crtc?"}
     B -- no --> Z["return"]
     B -- yes --> C["rotation = state->rotation"]
-    C --> D{"full frame required?<br/>full_frame_always<br/>full_frame_period_ms<br/>after enable / fb change / rotation change"}
+    C --> S{"self_damage?"}
+    S -- yes --> S1["compare source tiles<br/>with last_frame / full fallback"]
+    S -- no --> D{"full frame required?<br/>full_frame_always<br/>full_frame_period_ms<br/>after enable / fb change / rotation change"}
     D -- yes --> E["current_rect = source rect"]
     D -- no --> F["damage iterator:<br/>drm_atomic_helper_damage_iter_init/next"]
     F -->|no damage| Z
@@ -144,11 +146,12 @@ flowchart TD
     G --> G3{"rotation?"}
     G3 -- 0 --> G4["align x to 4 pixels"]
     G3 -- 90/180/270 --> G5["map clip to panel space<br/>align panel x to 4 pixels"]
-    G4 --> G2["merge overlapping or<br/>vertically adjacent clips"]
+    G4 --> G2["merge overlapping or<br/>adjacent clips"]
     G5 --> G2
     E --> H["drm_fb_xrgb8888_to_rgb888<br/>into URB buffer"]
     G2 --> H2["one header + payload<br/>per remaining clip"]
     H2 --> H
+    S1 --> H2
     H --> J["fill trigger5_bulk_header<br/>0xfb, counter, offsets, size, checksum"]
     J --> K["trigger5_get_next_urb"]
     K --> L["usb_submit_urb on bulk OUT EP 0x01"]
@@ -168,10 +171,15 @@ Details:
   through the eight transfers. A timeout latches `needs_reset`.
 - `trigger5_reset()` only logs and latches. `usb_queue_reset_device()` was
   deliberately removed: a port reset has taken down the whole xHCI controller.
-- Damage clips come from `drmModeDirtyFB`/`FB_DAMAGE_CLIPS` and are walked
-  with `drm_atomic_helper_damage_iter_init()`/`_next()`. Each clip is clipped
-  to the visible source rectangle, expanded to a 4-pixel boundary, and merged
-  with any clip it overlaps or forms a vertically adjacent band with.
+- In the default userspace-damage mode, clips come from
+  `drmModeDirtyFB`/`FB_DAMAGE_CLIPS` and are walked with
+  `drm_atomic_helper_damage_iter_init()`/`_next()`. Each clip is clipped to the
+  visible source rectangle, expanded to a 4-pixel boundary, and merged with any
+  clip it overlaps or forms an adjacent band with.
+- With `self_damage=1`, the iterator is bypassed. The driver compares the
+  current framebuffer with `last_frame`, builds changed 64×64 tiles, and sends
+  them. The framebuffer `.dirty` callback passes no clips, so Xorg's invalid
+  software-rotation rectangles never enter the atomic state.
 - One bulk header plus payload sequence is sent per remaining clip, so
   disjoint damage no longer inflates into a single screen-sized bounding box.
 - The adapter corrupts partial updates whose rows start or end on a 1- or
@@ -304,3 +312,5 @@ failed with `ENOSPC` after a rotated test.
   private cursor packet notes (not shipped).
 - `trigger5-tool` portrait modes now draw the canvas in framebuffer
   orientation; the driver's plane rotation produces the visible rotation.
+- Self-damage's `.dirty` hook covers Xorg's `drmModeDirtyFB`; an atomic client
+  that sets `FB_DAMAGE_CLIPS` directly bypasses it.
