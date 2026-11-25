@@ -32,7 +32,7 @@ Read-only and safe to run while X is active. It reports:
   endpoint.
 - **sysfs**: the matching `/sys/bus/usb/devices/...` node.
 - **module**: whether `trigger5` is loaded, refcount, version and every module
-  parameter (`full_frame_always`, `full_frame_period_ms`).
+  parameter (`full_frame_always`, `full_frame_period_ms`, `self_damage`).
 - **DRM/KMS**: driver version and capabilities, connector status and modes,
   EDID parsed from `/sys/class/drm/*/edid` (manufacturer, product, serial,
   week/year, EDID revision, physical size, monitor name/serial), CRTCs, and
@@ -44,9 +44,35 @@ Read-only and safe to run while X is active. It reports:
 - **DRM sysfs**: `status`, `enabled` and `dpms` for each card output.
 
 The tool never issues vendor control requests (`0xA1`, `0xA4`, `0xA7`,
-`0xC8`). Those are owned by the kernel driver; the tool only uses the DRM
-interfaces the driver exposes. The `0xA4` table reaches the probe through the
-driver's read-only sysfs cache.
+`0xC8`). Those are owned by the kernel driver; the tool only uses the DRM and
+module-parameter sysfs interfaces the driver exposes. The `0xA4` table reaches
+the probe through the driver's read-only sysfs cache.
+
+### `params`
+
+Read or write the driver's module parameters through sysfs:
+
+```sh
+trigger5-tool params                          # list every parameter
+trigger5-tool params self_damage              # read one
+sudo trigger5-tool params self_damage=1       # write one
+sudo trigger5-tool params self_damage=0 full_frame_period_ms=150
+```
+
+Writes need root; reads work as a normal user. The command validates the
+parameter name against the names exposed under
+`/sys/module/trigger5/parameters/`, writes the value, then reads it back and
+prints the result. Unknown names or failed writes return a non-zero exit status.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `self_damage` | `0` | Compare each frame with a driver-side shadow copy and send only changed tiles. Ignores userspace damage clips; useful for X11 software rotation and idle traffic. Uses ~8.3 MB at 1920×1080 and scans the frame per commit. |
+| `full_frame_always` | `0` | Send a complete frame on every commit. Correctness workaround for X11 software rotation; very high USB traffic at 1080p. |
+| `full_frame_period_ms` | `0` | Keep damage updates but force a complete frame at most once per period. `100`–`250` is a practical X11 setting; `0` disables it. |
+
+`self_damage=1` and the periodic/full-frame options can be combined; the full
+frame paths still force a complete update, while self-damage handles the
+remaining commits.
 
 ### `test`
 

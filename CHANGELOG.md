@@ -4,6 +4,33 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.8] - 2026-11-25
+
+### Added
+
+- `self_damage` module parameter: the driver keeps a shadow copy of the last
+  frame sent and compares each incoming framebuffer against it, sending only
+  changed 64×64 tiles. The framebuffer `.dirty` callback drops userspace damage
+  clips in this mode, which avoids the invalid clips Xorg produces under
+  software rotation.
+- Self-damage uses the existing 4-pixel alignment and per-rect send paths,
+  ignores framebuffer identity (so page flips do not force full frames), and
+  falls back to a complete frame when the shadow is missing, the framebuffer
+  geometry changes, or more than 32 tiles change.
+- `trigger5-tool params` lists, reads and writes the driver module parameters
+  (`self_damage`, `full_frame_always`, `full_frame_period_ms`).
+
+### Notes
+
+- Opt-in; the default remains the userspace damage-clip path.
+- Costs about 8.3 MB at 1920×1080 and one frame scan per commit. Idle desktop
+  traffic should drop substantially.
+- Self-damage is hardware-verified in rotate-0 (X11 landscape and portrait)
+  and implemented for native rotated modes; native-rotation hardware
+  validation is still pending. The custom `.dirty` callback covers Xorg's
+  `drmModeDirtyFB` path; atomic clients that set `FB_DAMAGE_CLIPS` directly
+  bypass it.
+
 ## [1.0.7] - 2026-11-25
 
 ### Changed

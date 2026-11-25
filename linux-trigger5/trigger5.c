@@ -14,6 +14,7 @@
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
 #include <linux/usb.h>
@@ -73,7 +74,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      7
+#define DRIVER_PATCHLEVEL      8
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -133,6 +134,11 @@ struct trigger5_device {
         */
        u8 default_modes[TRIGGER5_DEFAULT_MODES_MAX];
        int default_modes_len;
+
+       /* Driver-side damage tracking (self_damage). */
+       u32 *last_frame;
+       unsigned int last_width;
+       unsigned int last_height;
 
        int next_transfer;
        struct trigger5_transfer transfers[TRIGGER5_NUM_URBS];
@@ -229,6 +235,9 @@ struct trigger5_cursor_header {
 #define TRIGGER5_BULK_TIMEOUT_MS               2000
 #define TRIGGER5_DAMAGE_ALIGN                  4
 #define TRIGGER5_MAX_DAMAGE_RECTS              16
+#define TRIGGER5_TILE_SIZE                     64
+/* More than this many dirty tiles is cheaper as one full frame. */
+#define TRIGGER5_SELF_DAMAGE_MAX_TILES         32
 
 /*
  * Xorg's modesetting driver (as of 1.21) does not use the plane rotation
@@ -252,6 +261,17 @@ static unsigned int full_frame_period_ms;
 module_param(full_frame_period_ms, uint, 0644);
 MODULE_PARM_DESC(full_frame_period_ms,
 		 "Force a complete frame when this many milliseconds have elapsed (0 = off)");
+
+/*
+ * Driver-side damage tracking. Compare the incoming framebuffer with a
+ * persistent copy of the last frame sent to the adapter, independently of
+ * userspace damage clips and framebuffer identity. This avoids full frames on
+ * X11 page flips and works around invalid software-rotation damage clips.
+ */
+static bool self_damage;
+module_param(self_damage, bool, 0644);
+MODULE_PARM_DESC(self_damage,
+		 "Compute damage from a driver-side shadow framebuffer");
 
 #define to_trigger5(x) container_of_const(x, struct trigger5_device, drm)
 
@@ -315,8 +335,19 @@ static const struct drm_driver trigger5_drm_driver = {
        .patchlevel = DRIVER_PATCHLEVEL,
 };
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+static struct drm_framebuffer *
+trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+		   const struct drm_format_info *info,
+		   const struct drm_mode_fb_cmd2 *mode_cmd);
+#else
+static struct drm_framebuffer *
+trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+		   const struct drm_mode_fb_cmd2 *mode_cmd);
+#endif
+
 static const struct drm_mode_config_funcs trigger5_mode_config_funcs = {
-       .fb_create = drm_gem_fb_create_with_dirty,
+       .fb_create = trigger5_fb_create,
        .atomic_check = drm_atomic_helper_check,
        .atomic_commit = drm_atomic_helper_commit,
 };
@@ -595,7 +626,11 @@ static bool trigger5_rects_mergeable(const struct drm_rect *a,
 		return true;
 
 	/* Merge touching horizontal bands so one payload covers both. */
-	return overlap_x && (a->y2 == b->y1 || b->y2 == a->y1);
+	if (overlap_x && (a->y2 == b->y1 || b->y2 == a->y1))
+		return true;
+
+	/* Merge horizontally adjacent rectangles on the same rows. */
+	return overlap_y && (a->x2 == b->x1 || b->x2 == a->x1);
 }
 
 static void trigger5_rect_union(struct drm_rect *dst,
@@ -838,6 +873,178 @@ static int trigger5_plane_send_rotated_rect(struct trigger5_device *trigger5,
 	return 0;
 }
 
+static void trigger5_shadow_free(struct trigger5_device *trigger5)
+{
+	kvfree(trigger5->last_frame);
+	trigger5->last_frame = NULL;
+	trigger5->last_width = 0;
+	trigger5->last_height = 0;
+}
+
+/*
+ * Returns 0 if the existing shadow is usable, 1 if a new shadow was
+ * allocated, or a negative errno.
+ */
+static int trigger5_shadow_prepare(struct trigger5_device *trigger5,
+				   const struct drm_framebuffer *fb)
+{
+	size_t size;
+
+	if (trigger5->last_frame &&
+	    trigger5->last_width == fb->width &&
+	    trigger5->last_height == fb->height)
+		return 0;
+
+	trigger5_shadow_free(trigger5);
+	size = array3_size(fb->width, fb->height, sizeof(u32));
+	trigger5->last_frame = kvzalloc(size, GFP_KERNEL);
+	if (!trigger5->last_frame)
+		return -ENOMEM;
+
+	trigger5->last_width = fb->width;
+	trigger5->last_height = fb->height;
+	return 1;
+}
+
+static void trigger5_shadow_copy_row(void *dst, const struct iosys_map *src,
+				     unsigned int pitch, int x, int y, int width)
+{
+	size_t offset = (size_t)y * pitch + (size_t)x * 4;
+
+	if (src->is_iomem)
+		iosys_map_memcpy_from(dst, src, offset, (size_t)width * 4);
+	else
+		memcpy(dst, (const u8 *)src->vaddr + offset,
+		       (size_t)width * 4);
+}
+
+static bool trigger5_tile_changed(const struct trigger5_device *trigger5,
+				  const struct drm_shadow_plane_state *shadow,
+				  const struct drm_framebuffer *fb,
+				  int x, int y, int w, int h)
+{
+	const struct iosys_map *src = &shadow->data[0];
+	unsigned int pitch = fb->pitches[0];
+	unsigned int fb_width = fb->width;
+	u8 row[TRIGGER5_TILE_SIZE * sizeof(u32)];
+	int i;
+
+	for (i = 0; i < h; i++) {
+		trigger5_shadow_copy_row(row, src, pitch, x, y + i, w);
+
+		if (memcmp(&trigger5->last_frame[(size_t)(y + i) * fb_width + x],
+			   row, (size_t)w * 4))
+			return true;
+	}
+
+	return false;
+}
+
+static void trigger5_shadow_copy(struct trigger5_device *trigger5,
+				 const struct drm_shadow_plane_state *shadow,
+				 const struct drm_framebuffer *fb,
+				 const struct drm_rect *rect)
+{
+	const struct iosys_map *src = &shadow->data[0];
+	unsigned int pitch = fb->pitches[0];
+	unsigned int fb_width = fb->width;
+	int width = drm_rect_width(rect);
+	int y;
+
+	for (y = rect->y1; y < rect->y2; y++) {
+		void *dst = &trigger5->last_frame[(size_t)y * fb_width + rect->x1];
+
+		trigger5_shadow_copy_row(dst, src, pitch, rect->x1, y, width);
+	}
+}
+
+static int trigger5_collect_self_damage(struct trigger5_device *trigger5,
+					const struct drm_shadow_plane_state *shadow,
+					const struct drm_framebuffer *fb,
+					const struct drm_rect *src_rect,
+					struct drm_rect *rects,
+					bool *full_frame)
+{
+	int count = 0, dirty = 0;
+	int x, y;
+
+	*full_frame = false;
+	for (y = src_rect->y1; y < src_rect->y2; y += TRIGGER5_TILE_SIZE) {
+		int h = min_t(int, TRIGGER5_TILE_SIZE, src_rect->y2 - y);
+
+		for (x = src_rect->x1; x < src_rect->x2;
+		     x += TRIGGER5_TILE_SIZE) {
+			int w = min_t(int, TRIGGER5_TILE_SIZE,
+				      src_rect->x2 - x);
+			struct drm_rect tile = {
+				.x1 = x,
+				.y1 = y,
+				.x2 = x + w,
+				.y2 = y + h,
+			};
+
+			if (!trigger5_tile_changed(trigger5, shadow, fb,
+						   x, y, w, h))
+				continue;
+
+			trigger5_damage_align(&tile, src_rect->x1,
+					      src_rect->x2);
+			if (drm_rect_width(&tile) <= 0 ||
+			    drm_rect_height(&tile) <= 0)
+				continue;
+
+			trigger5_damage_add(rects, &count, &tile);
+			if (++dirty > TRIGGER5_SELF_DAMAGE_MAX_TILES) {
+				rects[0] = *src_rect;
+				*full_frame = true;
+				return 1;
+			}
+		}
+	}
+
+	trigger5_damage_coalesce(rects, &count);
+	return count;
+}
+
+static int trigger5_fb_dirty(struct drm_framebuffer *fb,
+			     struct drm_file *file_priv,
+			     unsigned int flags, unsigned int color,
+			     struct drm_clip_rect *clips,
+			     unsigned int num_clips)
+{
+	if (self_damage)
+		return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color,
+						 NULL, 0);
+
+	return drm_atomic_helper_dirtyfb(fb, file_priv, flags, color,
+					 clips, num_clips);
+}
+
+static const struct drm_framebuffer_funcs trigger5_fb_funcs = {
+	.destroy = drm_gem_fb_destroy,
+	.create_handle = drm_gem_fb_create_handle,
+	.dirty = trigger5_fb_dirty,
+};
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+static struct drm_framebuffer *
+trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+		   const struct drm_format_info *info,
+		   const struct drm_mode_fb_cmd2 *mode_cmd)
+{
+	return drm_gem_fb_create_with_funcs(dev, file_priv, info, mode_cmd,
+					    &trigger5_fb_funcs);
+}
+#else
+static struct drm_framebuffer *
+trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
+		   const struct drm_mode_fb_cmd2 *mode_cmd)
+{
+	return drm_gem_fb_create_with_funcs(dev, file_priv, mode_cmd,
+					    &trigger5_fb_funcs);
+}
+#endif
+
 static void trigger5_plane_atomic_update(struct drm_plane *plane,
 					TRIGGER5_ATOMIC_COMMIT *atomic_state)
 {
@@ -859,6 +1066,12 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	if (!drm_dev_enter(plane->dev, &idx))
 		return;
 
+	if (!state->fb || !state->crtc)
+		goto exit;
+
+	if (!self_damage && trigger5->last_frame)
+		trigger5_shadow_free(trigger5);
+
 	rotation = state->rotation & (DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 |
 				      DRM_MODE_ROTATE_180 | DRM_MODE_ROTATE_270);
 
@@ -869,6 +1082,18 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	src_rect.y1 >>= 16;
 	src_rect.x2 = (src_rect.x2 >> 16) + !!(src_rect.x2 & 0xffff);
 	src_rect.y2 = (src_rect.y2 >> 16) + !!(src_rect.y2 & 0xffff);
+
+	{
+		struct drm_rect fb_rect = {
+			.x1 = 0,
+			.y1 = 0,
+			.x2 = state->fb->width,
+			.y2 = state->fb->height,
+		};
+
+		if (!drm_rect_intersect(&src_rect, &fb_rect))
+			goto exit;
+	}
 
 	if (rotation != trigger5->last_rotation) {
 		drm_info(&trigger5->drm,
@@ -897,9 +1122,19 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 			      msecs_to_jiffies(full_frame_period_ms));
 
 	full = full_frame_always || periodic_full || trigger5->full_frame ||
-	       !old_state->fb || old_state->fb != state->fb ||
-	       old_state->crtc != state->crtc ||
+	       !old_state->fb || old_state->crtc != state->crtc ||
 	       old_state->rotation != state->rotation;
+
+	if (!self_damage) {
+		full = full || old_state->fb != state->fb;
+	} else if (old_state->fb) {
+		full = full ||
+		       old_state->fb->width != state->fb->width ||
+		       old_state->fb->height != state->fb->height ||
+		       old_state->fb->format->format !=
+			       state->fb->format->format ||
+		       !drm_rect_equals(&state->src, &old_state->src);
+	}
 
 	if (full)
 		trigger5->last_full_frame = jiffies;
@@ -910,9 +1145,23 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 		struct drm_atomic_helper_damage_iter iter;
 		struct drm_rect rects[TRIGGER5_MAX_DAMAGE_RECTS];
 		struct drm_rect damage;
+		bool self_full = false;
 		int count = 0, i;
 
-		if (full) {
+		if (self_damage) {
+			int shadow_ret =
+				trigger5_shadow_prepare(trigger5, state->fb);
+
+			if (shadow_ret < 0) {
+				drm_warn_once(&trigger5->drm,
+					      "self-damage shadow allocation failed; using full frames\n");
+				self_full = true;
+				rects[count++] = src_rect;
+			} else if (full || shadow_ret > 0) {
+				self_full = true;
+				rects[count++] = src_rect;
+			}
+		} else if (full) {
 			rects[count++] = src_rect;
 		} else {
 			drm_atomic_helper_damage_iter_init(&iter, old_state,
@@ -932,18 +1181,47 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 			trigger5_damage_coalesce(rects, &count);
 		}
 
-		if (!count)
+		if (!count && !self_damage)
 			goto exit;
 
 		if (drm_gem_fb_begin_cpu_access(state->fb,
 						DMA_FROM_DEVICE) < 0)
 			goto exit;
 
+		if (self_damage && !count) {
+			count = trigger5_collect_self_damage(trigger5,
+							     shadow_plane_state,
+							     state->fb, &src_rect,
+							     rects, &self_full);
+		}
+
+		if (!count)
+			goto exit_end_cpu_access;
+
 		for (i = 0; i < count; i++) {
 			if (trigger5_plane_send_rect(trigger5, state,
 						     shadow_plane_state,
 						     &src_rect, &rects[i]))
 				break;
+		}
+
+		if (self_damage && trigger5->last_frame && i == count) {
+			if (self_full) {
+				trigger5_shadow_copy(trigger5,
+						     shadow_plane_state,
+						     state->fb, &src_rect);
+			} else {
+				int j;
+
+				for (j = 0; j < count; j++)
+					trigger5_shadow_copy(trigger5,
+							     shadow_plane_state,
+							     state->fb,
+							     &rects[j]);
+			}
+		} else if (self_damage) {
+			/* A failed send may leave the panel partly stale. */
+			trigger5->full_frame = true;
 		}
 
 		goto exit_end_cpu_access;
@@ -958,9 +1236,12 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 	{
 		struct drm_atomic_helper_damage_iter iter;
 		struct drm_rect rects[TRIGGER5_MAX_DAMAGE_RECTS];
+		struct drm_rect src_rects[TRIGGER5_MAX_DAMAGE_RECTS];
 		struct drm_rect damage;
 		int dst_w, dst_h;
-		int count = 0, i;
+		int count = 0, i, src_count = 0;
+		bool self_full = false;
+		bool force_full = false;
 
 		if (crtc_state) {
 			dst_w = crtc_state->mode.hdisplay;
@@ -983,7 +1264,20 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 		if (dst_w <= 0 || dst_h <= 0)
 			goto exit;
 
-		if (full) {
+		if (self_damage) {
+			int shadow_ret =
+				trigger5_shadow_prepare(trigger5, state->fb);
+
+			if (shadow_ret < 0) {
+				drm_warn_once(&trigger5->drm,
+					      "self-damage shadow allocation failed; using full frames\n");
+				force_full = true;
+				self_full = true;
+			} else if (full || shadow_ret > 0) {
+				force_full = true;
+				self_full = true;
+			}
+		} else if (full) {
 			rects[count].x1 = 0;
 			rects[count].y1 = 0;
 			rects[count].x2 = dst_w;
@@ -1010,12 +1304,56 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 			trigger5_damage_coalesce(rects, &count);
 		}
 
-		if (!count)
+		if (!self_damage && !count)
 			goto exit;
 
 		if (drm_gem_fb_begin_cpu_access(state->fb,
 						DMA_FROM_DEVICE) < 0)
 			goto exit;
+
+		if (self_damage && !force_full) {
+			src_count = trigger5_collect_self_damage(trigger5,
+								 shadow_plane_state,
+								 state->fb,
+								 &src_rect,
+								 src_rects,
+								 &self_full);
+			if (!src_count)
+				goto exit_end_cpu_access;
+
+			if (self_full) {
+				force_full = true;
+			} else {
+				int j;
+
+				for (j = 0; j < src_count; j++) {
+					struct drm_rect dst;
+
+					trigger5_rotate_damage_rect(&src_rects[j],
+								    &src_rect,
+								    rotation, &dst);
+					trigger5_damage_align(&dst, 0, dst_w);
+					if (drm_rect_width(&dst) <= 0 ||
+					    drm_rect_height(&dst) <= 0)
+						continue;
+
+					trigger5_damage_add(rects, &count,
+							    &dst);
+				}
+				trigger5_damage_coalesce(rects, &count);
+			}
+		}
+
+		if (force_full) {
+			rects[0].x1 = 0;
+			rects[0].y1 = 0;
+			rects[0].x2 = dst_w;
+			rects[0].y2 = dst_h;
+			count = 1;
+		}
+
+		if (!count)
+			goto exit_end_cpu_access;
 
 		for (i = 0; i < count; i++) {
 			if (trigger5_plane_send_rotated_rect(trigger5, state,
@@ -1023,6 +1361,24 @@ static void trigger5_plane_atomic_update(struct drm_plane *plane,
 							     &src_rect, rotation,
 							     &rects[i]))
 				break;
+		}
+
+		if (self_damage && trigger5->last_frame && i == count) {
+			if (self_full) {
+				trigger5_shadow_copy(trigger5,
+						     shadow_plane_state,
+						     state->fb, &src_rect);
+			} else {
+				int j;
+
+				for (j = 0; j < src_count; j++)
+					trigger5_shadow_copy(trigger5,
+							     shadow_plane_state,
+							     state->fb,
+							     &src_rects[j]);
+			}
+		} else if (self_damage) {
+			trigger5->full_frame = true;
 		}
 
 		goto exit_end_cpu_access;
@@ -2030,6 +2386,7 @@ static void trigger5_usb_disconnect(struct usb_interface *interface)
        drm_atomic_helper_shutdown(dev);
        trigger5_stop_io(trigger5);
        trigger5_free_urbs(trigger5);
+       trigger5_shadow_free(trigger5);
 }
 
 static const struct usb_device_id id_table[] = {

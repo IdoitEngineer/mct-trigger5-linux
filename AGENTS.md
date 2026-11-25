@@ -40,7 +40,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 - `trigger5.c` is a modified upstream v6 copy. The local changes are summarised in the READMEs; the tree is maintained directly, with no in-tree patch file. Keep the upstream v6 source or link elsewhere if you need to rebase it later.
 - EDID is read once at probe and cached. Never re-read EDID while bulk transfers are active: the adapter returns corrupt data and the connector loses its mode list.
 - The adapter's `0xA4` supported-mode table is read once at probe and exposed read-only as `default_modes` on the card device's sysfs node. Never re-read `0xA4` while streaming; it is informational and the monitor EDID is authoritative.
-- Rotation 90/180/270 is converted in the driver. Damage clips are mapped into panel space and sent as partial destination frames; full frames are still sent after enable, framebuffer changes and rotation changes. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; that is what `full_frame_period_ms` is for. Read the root README before changing damage/full-frame logic.
+- Rotation 90/180/270 is converted in the driver. Damage clips are mapped into panel space and sent as partial destination frames; full frames are still sent after enable, framebuffer changes and rotation changes. Xorg 1.21's modesetting driver ignores plane rotation and rotates in software; `full_frame_period_ms` and `self_damage` are the X11 workarounds. `self_damage=1` makes the driver compare a shadow copy of the last sent frame and ignore userspace damage clips; its custom framebuffer `.dirty` callback drops X's invalid clips. The rotate-0 path is hardware-verified; native rotated self-damage is implemented but still needs hardware validation. Read the root README before changing damage/full-frame logic.
 - Linux sends raw RGB888 (`flags=0x01`). The Windows Trigger 5 driver contains a proprietary `EvoEncode` encoded-frame path (`flags=0x71` observed in captures); the payload is not decoded or implemented here. Do not claim compressed-frame support.
 - A USB transfer error latches `needs_reset` and stops I/O. Do **not** reintroduce `usb_queue_reset_device()`: it has taken down the whole xHCI controller. Recovery is replug or unbind/rebind.
 - Hardware cursor: the visible cursor is uploaded by the Windows driver as a **bulk type-2 packet** (64×64 ARGB, 16 KiB, then show/move/hide packets). The `0xC8` control writes (`0xE868` enable, `wValue=X`/`wIndex=Y` position, negative `value - 1`) are secondary. Keep the cursor plane 64×64 ARGB8888 and compatible with `drmModeSetCursor2`; implement the bulk path before claiming cursor support. See the private `windows-RE-trigger/CURSOR-BULK-PACKETS.md` notes (not shipped).
@@ -64,11 +64,11 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ## Packaging and CI
 
-- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.7_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
+- `make -C linux-trigger5 debpkg` produces `trigger5-dkms_1.0.8_all.deb` at the repository root; `make debclean` removes package build state but leaves the `.deb`.
 - The package is DKMS-source only (`Architecture: all`). Keep the hand-written `debian/trigger5-dkms.postinst` and `prerm`: stock Debian/Ubuntu `dkms` lacks the `dh_dkms` addon.
 - `lintian` must stay clean; the `lint:debian` CI job builds and lints the package.
 - Containers share the host `uname -r`. `ci/test-install.sh` deliberately symlinks the host build tree and builds the distro kernel explicitly with `dkms -k <header-version>`; preserve that when editing CI.
-- GitLab jobs use the `tls-docker-runner` tag. Ubuntu 26.10 / 7.3 is a manual, non-blocking build.
+- GitLab jobs use the `tls-docker-runner` tag; that tag is specific to the current self-hosted runner and must be replaced when the project is mirrored. Ubuntu 26.10 / 7.3 is a manual, non-blocking build.
 - Tag pipelines run `publish:package` (generic Package Registry) and `publish:release` (GitLab Release with the `.deb` asset link). The version in the tag must match the `.deb` filename.
 
 ## Docs
@@ -86,7 +86,7 @@ CI tests only the **stock distribution default kernels**. Local work must still 
 
 ### Issue tracker
 
-Issues and specs live in GitLab Issues on `gitlab.beltarc.org/jeringa/mct-trigger5-linux`. Use the GitLab REST API with the project token in `.git-token` (never print it); `glab` may be stale. See `docs/agents/issue-tracker.md`.
+Issues and specs live in the project's GitLab issue tracker; infer the host and path from `git remote -v`. Use `glab` or the GitLab REST API with a token from the environment; never commit tokens. For a GitHub mirror, use `gh` and GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -1,3 +1,10 @@
+trigger5 (1.0.8) unstable; urgency=medium
+
+  * Add opt-in self_damage shadow framebuffer tracking for X11 and idle
+    traffic.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Wed, 25 Nov 2026 20:15:24 +1300
+
 trigger5 (1.0.7) unstable; urgency=medium
 
   * Documentation and maintenance release: correct 1024x768/compression
