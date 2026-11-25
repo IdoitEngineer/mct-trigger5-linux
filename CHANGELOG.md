@@ -4,22 +4,31 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
-## [Unreleased]
+## [1.0.7] - 2026-11-25
 
 ### Changed
 
-- Corrected the 1024×768 status and the compression description: Linux sends
-  raw RGB888; the Windows Trigger 5 driver has a proprietary `EvoEncode`
-  encoded-frame path that is not implemented here.
+- Corrected the 1024×768 status and compression description: 1024×768 is
+  validated through `trigger5-tool --device-mode 3` and KDE/xrandr, and Linux
+  sends raw RGB888. The Windows Trigger 5 driver has a proprietary
+  `EvoEncode` encoded-frame path that is not implemented here.
 - Corrected the README rotation status text to describe partial damage frames.
 - Agent documentation now requires `--no-follow-tags` for branch pushes and
   uses the project token for GitLab API access.
+- Shared the 0xA4 table count clamp and the CEA/CVT mode synthesis helper.
+- Replaced dead links to the private reverse-engineering notes.
 
 ### Fixed
 
 - `scripts/bump-version.sh` now updates `DRIVER_MAJOR` and `DRIVER_MINOR` as
   well as the patch level, and preserves the mode of the files it edits.
 - Maintainer scripts keep their executable bits.
+
+### Notes
+
+- Documentation and maintenance release; driver and tool behaviour is
+  unchanged.
+
 ## [1.0.6] - 2026-11-24
 
 ### Added
@@ -59,8 +68,8 @@ version follows the same `major.minor.patch` values.
   had left a one-pixel trail from the first character.
 - The `default_modes` sysfs attribute uses `sysfs_emit_at()` for subsequent
   lines, avoiding an `invalid sysfs_emit` warning.
-- 1024×768 displays through `trigger5-tool --device-mode 3`; the KDE/X11
-  modesetting path is still pending validation.
+- 1024×768 displays through `trigger5-tool --device-mode 3`; KDE/xrandr
+  validation followed in 1.0.7.
 
 ## [1.0.5] - 2026-11-24
 
@@ -174,10 +183,10 @@ version follows the same `major.minor.patch` values.
 
 ### Known limitations
 
-- 1920×1080 is the only fully validated desktop mode. 1024×768 displays via
-  `trigger5-tool --device-mode 3` as of 1.0.6; the KDE/X11 modesetting path was
-  still pending validation. The earlier blank-panel report was the adapter
-  reset/settling path, not compression.
+- 1920×1080 and 1024×768 are validated desktop modes. 1024×768 was verified
+  through both `trigger5-tool --device-mode 3` and KDE/xrandr as of 1.0.7. The
+  earlier blank-panel report was the adapter reset/settling path, not
+  compression.
 - `trigger5-tool` still destroys the test framebuffer if `display_restore()`
   fails. Fixed in 1.0.6.
 
