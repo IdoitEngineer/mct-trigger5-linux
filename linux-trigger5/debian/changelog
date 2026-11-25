@@ -1,3 +1,11 @@
+trigger5 (1.0.7) unstable; urgency=medium
+
+  * Documentation and maintenance release: correct 1024x768/compression
+    status, harden the version bump workflow, and keep maintainer scripts
+    executable.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Wed, 25 Nov 2026 17:06:37 +1300
+
 trigger5 (1.0.6) unstable; urgency=medium
 
   * Add the adapter 0xA4 default mode table to probe output, add the VERSION

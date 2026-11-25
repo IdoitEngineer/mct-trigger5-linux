@@ -293,10 +293,9 @@ failed with `ENOSPC` after a rotated test.
 
 ## 9. Known current limitations
 
-- 1920×1080 is the fully validated desktop mode. 1024×768 displays through
-  `trigger5-tool --device-mode 3`; the KDE/X11 modesetting path is still pending
-  validation. The earlier blank-panel report was the adapter reset/settling
-  path, not compression.
+- 1920×1080 and 1024×768 are validated desktop modes. 1024×768 was verified
+  through both `trigger5-tool --device-mode 3` and KDE/xrandr. The earlier
+  blank-panel report was the adapter reset/settling path, not compression.
 - Linux sends raw RGB888 (`flags=0x01`). The Windows Trigger 5 driver contains
   a proprietary `EvoEncode` encoded-frame path (`flags=0x71` observed); it is
   not implemented or decoded here. Trigger 6's JPEG path is different.
