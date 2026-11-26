@@ -120,10 +120,11 @@ jobs:
           version="${tag#v}"
           deb="trigger5-dkms_${version}_all.deb"
           test -f "$deb"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" --clobber "$deb"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber "$deb"
           else
             gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
               --title "trigger5 ${tag}" \
               --notes "DKMS package for ${tag}. See CHANGELOG.md." \
               "$deb"
