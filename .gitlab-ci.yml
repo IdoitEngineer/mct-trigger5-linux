@@ -12,11 +12,17 @@ stages:
 
 variables:
   DEBIAN_FRONTEND: noninteractive
-  # Runner tag. The default targets the canonical self-hosted runner. A mirror
-  # overrides this with a project CI/CD variable; on gitlab.com hosted runners
-  # use TRIGGER5_RUNNER_TAG=saas-linux-small-amd64. GitLab expands variables in
-  # tags, and a project variable takes precedence over this default.
+  # Runner tag. The default targets the canonical self-hosted runner; a project
+  # CI/CD variable of the same name overrides it. The workflow rule below
+  # selects GitLab.com's hosted runners automatically.
   TRIGGER5_RUNNER_TAG: tls-docker-runner
+
+workflow:
+  rules:
+    - if: $CI_SERVER_HOST == "gitlab.com"
+      variables:
+        TRIGGER5_RUNNER_TAG: saas-linux-small-amd64
+    - when: always
 
 default:
   tags:
