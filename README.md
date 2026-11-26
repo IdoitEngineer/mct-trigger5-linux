@@ -1,4 +1,4 @@
-# MCT USB 3.0 External Graphics Adapter — Linux (Devuan/Debian)
+# MCT Trigger 5 USB 3.0 display adapter — Linux DRM/KMS driver (Debian, Ubuntu, Devuan)
 
 Working notes and driver for the **Magic Control Technology MCT USB3.0 External
 Graphics Device** (`0711:5805`) on Devuan 6 / kernel 7.3.3.
