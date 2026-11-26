@@ -26,5 +26,7 @@ linux-trigger5/debian/*.debhelper.log
 *.changes
 *.buildinfo
 
+.gitlab.com-token
+.github.com-token
 .git-token
 .direnv/
