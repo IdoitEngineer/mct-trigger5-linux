@@ -24,7 +24,7 @@ the vendor binaries are proprietary and not covered — see
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
 | `VERSION` | Current package version; update with `scripts/bump-version.sh`. |
 | `CHANGELOG.md` | Release history and known limitations. |
-| `trigger5-dkms_1.0.8_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.9_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -34,7 +34,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20, and
   1024×768 via both `trigger5-tool` and KDE/xrandr on 2026‑11‑25.
-- Driver installed via DKMS as `trigger5/1.0.8`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.9`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; damage rectangles are
   mapped into panel space and sent as partial frames, with full frames after
@@ -96,9 +96,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0.8_all.deb
-../trigger5_1.0.8_amd64.changes
-../trigger5_1.0.8_amd64.buildinfo
+../trigger5-dkms_1.0.9_all.deb
+../trigger5_1.0.9_amd64.changes
+../trigger5_1.0.9_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -111,9 +111,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0.8_all.deb
+sudo apt install ./trigger5-dkms_1.0.9_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0.8_all.deb
+sudo dpkg -i trigger5-dkms_1.0.9_all.deb
 ```
 
 Typical end-to-end:
@@ -121,7 +121,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0.8_all.deb
+sudo apt install ../trigger5-dkms_1.0.9_all.deb
 sudo reboot
 ```
 
@@ -330,7 +330,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0.8`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.9`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -669,8 +669,9 @@ hard-code it.
 
 ## CI
 
-`.gitlab-ci.yml` runs the same stock-distribution checks on the GitLab Docker
-runners:
+`.gitlab-ci.yml` runs the stock-distribution checks on GitLab Docker runners;
+`.github/workflows/ci.yml` mirrors the same jobs on GitHub Actions using the
+same distro images as containers:
 
 | Job | Image | Kernel |
 |---|---|---|
@@ -687,9 +688,13 @@ Tag pipelines also publish the `.deb` permanently to the generic Package
 Registry and attach it to a GitLab Release. Pipeline artifacts expire after a
 week; the Package Registry copy is the durable download.
 
-The `tls-docker-runner` tag is specific to the current self-hosted GitLab
-runner. When mirroring to gitlab.com or GitHub, replace or remove that tag and
-add an equivalent CI workflow for the target host.
+GitHub tag pipelines attach the same `.deb` to a GitHub Release.
+
+Jobs select their runner through `TRIGGER5_RUNNER_TAG`, which defaults to
+`tls-docker-runner` (the canonical self-hosted runner). Set a project CI/CD
+variable of the same name to use a different runner; on gitlab.com hosted
+runners, `TRIGGER5_RUNNER_TAG=saas-linux-small-amd64` works. A project variable
+takes precedence over the value in `.gitlab-ci.yml`.
 
 ## Troubleshooting
 
@@ -703,7 +708,7 @@ add an equivalent CI workflow for the target host.
 | Garbled / stale picture after rotation | Native rotation sends per-clip partial frames aligned to 4 pixels in panel space. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.8_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.9_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 

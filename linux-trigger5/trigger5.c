@@ -74,7 +74,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      8
+#define DRIVER_PATCHLEVEL      9
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -335,7 +335,7 @@ static const struct drm_driver trigger5_drm_driver = {
        .patchlevel = DRIVER_PATCHLEVEL,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 static struct drm_framebuffer *
 trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 		   const struct drm_format_info *info,
@@ -1026,7 +1026,7 @@ static const struct drm_framebuffer_funcs trigger5_fb_funcs = {
 	.dirty = trigger5_fb_dirty,
 };
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 0, 0)
 static struct drm_framebuffer *
 trigger5_fb_create(struct drm_device *dev, struct drm_file *file_priv,
 		   const struct drm_format_info *info,

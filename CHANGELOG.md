@@ -4,6 +4,14 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.9] - 2026-11-26
+
+### Fixed
+
+- Build on Linux 7.0. `drm_gem_fb_create_with_funcs()` has taken the
+  `drm_format_info` argument since 7.0, not 7.2; the framebuffer-create guard
+  now uses `>= 7.0`. This fixes the Ubuntu 26.04 / 7.0 build and DKMS install.
+
 ## [1.0.8] - 2026-11-25
 
 ### Added

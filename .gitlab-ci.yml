@@ -12,10 +12,15 @@ stages:
 
 variables:
   DEBIAN_FRONTEND: noninteractive
+  # Runner tag. The default targets the canonical self-hosted runner. A mirror
+  # overrides this with a project CI/CD variable; on gitlab.com hosted runners
+  # use TRIGGER5_RUNNER_TAG=saas-linux-small-amd64. GitLab expands variables in
+  # tags, and a project variable takes precedence over this default.
+  TRIGGER5_RUNNER_TAG: tls-docker-runner
 
 default:
   tags:
-    - tls-docker-runner
+    - $TRIGGER5_RUNNER_TAG
 
 lint:debian:
   stage: lint
