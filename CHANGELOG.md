@@ -4,6 +4,21 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.10] - 2026-11-28
+
+### Fixed
+
+- Initialise atomic CRTC and connector state on kernels before 7.3. The
+  driver only provided `atomic_create_state`, which does not exist before
+  7.3, and `drm_mode_config_reset()` only calls `.reset`; the state therefore
+  stayed `NULL` after probe and the first commit warned in
+  `drm_atomic_helper_crtc_duplicate_state()` (`WARN_ON(!crtc->state)`).
+  Provide `.reset = drm_atomic_helper_crtc_reset` and
+  `.reset = drm_atomic_helper_connector_reset` for kernels before 7.3,
+  keeping `atomic_create_state` on 7.3 and later. This fixes the
+  `output_poll_execute` / fbdev hotplug warning reported on Ubuntu 24.04
+  and 26.04 with kernel 7.0 (issues #5 and #6).
+
 ## [1.0.9] - 2026-11-26
 
 ### Fixed

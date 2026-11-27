@@ -74,7 +74,7 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      9
+#define DRIVER_PATCHLEVEL      10
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
@@ -1988,6 +1988,14 @@ static const struct drm_crtc_helper_funcs trigger5_crtc_helper_funcs = {
 static const struct drm_crtc_funcs trigger5_crtc_funcs = {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
        .atomic_create_state = drm_atomic_helper_crtc_create_state,
+#else
+       /*
+        * Before 7.3, drm_mode_config_reset() only initialises objects that
+        * provide a reset hook. Without this the CRTC state stays NULL and
+        * the first atomic commit warns in
+        * drm_atomic_helper_crtc_duplicate_state().
+        */
+       .reset = drm_atomic_helper_crtc_reset,
 #endif
        .destroy = drm_crtc_cleanup,
        .set_config = drm_atomic_helper_set_config,
@@ -2154,6 +2162,9 @@ static const struct drm_connector_funcs trigger5_connector_funcs = {
        .detect = trigger5_detect,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0)
        .atomic_create_state = drm_atomic_helper_connector_create_state,
+#else
+       /* See trigger5_crtc_funcs: state must exist before the first commit. */
+       .reset = drm_atomic_helper_connector_reset,
 #endif
        .atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
        .atomic_destroy_state = drm_atomic_helper_connector_destroy_state,

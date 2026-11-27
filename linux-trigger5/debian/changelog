@@ -1,3 +1,11 @@
+trigger5 (1.0.10) unstable; urgency=medium
+
+  * Fix atomic CRTC/connector state init on kernels before 7.3: provide
+    .reset so drm_mode_config_reset() allocates state and the first commit
+    no longer warns.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Sat, 28 Nov 2026 11:05:32 +1300
+
 trigger5 (1.0.9) unstable; urgency=medium
 
   * Fix the framebuffer-create API guard for Linux 7.0: the
