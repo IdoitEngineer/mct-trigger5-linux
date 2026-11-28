@@ -1,3 +1,10 @@
+trigger5 (1.0.13) unstable; urgency=medium
+
+  * Document the GNOME Wayland GPU-removal limitation and the changing
+    card/connector numbers; note the log-out-before-unplug workaround.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Sat, 28 Nov 2026 17:06:30 +1300
+
 trigger5 (1.0.12) unstable; urgency=medium
 
   * Keep the connector disconnected until a valid EDID is available, retry the

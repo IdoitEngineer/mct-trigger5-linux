@@ -24,7 +24,7 @@ the vendor binaries are proprietary and not covered — see
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
 | `VERSION` | Current package version; update with `scripts/bump-version.sh`. |
 | `CHANGELOG.md` | Release history and known limitations. |
-| `trigger5-dkms_1.0.12_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.13_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -34,7 +34,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20, and
   1024×768 via both `trigger5-tool` and KDE/xrandr on 2026‑11‑25.
-- Driver installed via DKMS as `trigger5/1.0.12`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.13`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; damage rectangles are
   mapped into panel space and sent as partial frames, with full frames after
@@ -96,9 +96,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0.12_all.deb
-../trigger5_1.0.12_amd64.changes
-../trigger5_1.0.12_amd64.buildinfo
+../trigger5-dkms_1.0.13_all.deb
+../trigger5_1.0.13_amd64.changes
+../trigger5_1.0.13_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -111,9 +111,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0.12_all.deb
+sudo apt install ./trigger5-dkms_1.0.13_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0.12_all.deb
+sudo dpkg -i trigger5-dkms_1.0.13_all.deb
 ```
 
 Typical end-to-end:
@@ -121,7 +121,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0.12_all.deb
+sudo apt install ../trigger5-dkms_1.0.13_all.deb
 sudo reboot
 ```
 
@@ -330,7 +330,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0.12`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.13`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -419,6 +419,22 @@ These are local until the driver lands upstream.
   after plugging the adapter. Wayland is not affected by this Xorg bug.
 - With `AutoAddGPU` disabled on X11, the adapter is not picked up until the X
   server restarts; unplugging is safe because the card was never added.
+- **GNOME Wayland cannot remove a GPU at runtime.** Mutter keeps the removed
+  GPU in its list. On replug the kernel may reuse the same `/dev/dri/cardN`
+  number; Mutter then logs `Failed to hotplug secondary gpu ... device already
+  present` and can segfault `gnome-shell` (observed on Ubuntu 26.04 with GNOME
+  50.1; the session drops to GDM). On Ubuntu 24.04 with GNOME 46 the shell
+  survived a replug that received a different card number, but logged GLib
+  criticals (`invalid (NULL) pointer instance`, `g_hash_table_* != NULL`) and
+  left the new output disabled. Whether it crashes depends on which DRM minor
+  the kernel assigns, so the failure is intermittent. **Log out before
+  unplugging or replugging on Wayland**; a fresh session adds the new card
+  normally. This is a Mutter limitation, not a trigger5 fault. X11 is not
+  affected by this bug, subject to the patched-xorg-server note above.
+- The DRM card and connector numbers are allocated by the kernel and can change
+  after a replug (`VGA-1` can become `VGA-2`). Scripts and `monitors.xml`
+  entries that hardcode `VGA-1` can stop matching; use `card*-VGA-*` or find
+  the card by its `trigger5` driver.
 
 ### Rotation
 
@@ -740,7 +756,7 @@ precedence over both in-file defaults.
 | Garbled / stale picture after rotation | Native rotation sends per-clip partial frames aligned to 4 pixels in panel space. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.12_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.13_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 
