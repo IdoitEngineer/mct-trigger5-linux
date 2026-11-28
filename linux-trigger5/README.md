@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.11`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.12`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -27,11 +27,14 @@ driver.
 
 `trigger5.c` carries local fixes:
 
-1. **EDID is read once during probe and cached.** The adapter returns corrupt
-   EDID replies (`checksum is invalid`) if the vendor read is issued while
-   bulk frame transfers are running. `get_modes` now reuses the cached EDID
+1. **EDID is read once and cached, with bounded retries.** The adapter returns
+   corrupt EDID replies (`checksum is invalid`) if the vendor read is issued
+   while bulk frame transfers are running. `get_modes` reuses the cached EDID
    instead of re-reading it, so a re-probe (e.g. when rotating the output) can
-   no longer wipe the connector's mode list.
+   no longer wipe the connector's mode list. If the probe read fails, the
+   driver retries from the connector poll while idle and reports the connector
+   disconnected until an EDID is available, avoiding the no-EDID fallback
+   stream.
 2. **A full frame is pushed after a modeset, a rotation change, or (in the
    default userspace-damage mode) a framebuffer change.** Previously only
    damaged rects were sent, leaving stale rows on the panel.
@@ -139,7 +142,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.11_all.deb`.
+`trigger5-dkms_1.0.12_all.deb`.
 
 Manual build if you prefer:
 
@@ -192,7 +195,10 @@ sudo ./uninstall.sh
 - Kernel upgrades are handled by DKMS automatically.
 - Installing the package while the adapter is attached replays the USB add
   event, so the module binds without a reboot. If the monitor is not ready yet,
-  the driver retries the EDID at probe and during connector polling.
+  the driver retries the EDID at probe and during connector polling; until the
+  read succeeds the connector stays disconnected and has no output. Replacing
+  an already-loaded module still needs a reboot or an explicit
+  `modprobe -r trigger5 && modprobe trigger5` (stop the display session first).
 - **X11 runtime unplug requires a patched xorg-server** (upstream commits
   `dbcd36b` and `9babe7e7`; Ubuntu 24.04 has them in
   `21.1.12-1ubuntu1.9`). Older servers (including Debian 13 and Devuan 6 at the

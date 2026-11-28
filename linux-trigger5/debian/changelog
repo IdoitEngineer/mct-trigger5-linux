@@ -1,3 +1,11 @@
+trigger5 (1.0.12) unstable; urgency=medium
+
+  * Keep the connector disconnected until a valid EDID is available, retry the
+    EDID read when the status request fails or the block is corrupt, and retry
+    the post-mode reset.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Sat, 28 Nov 2026 15:39:46 +1300
+
 trigger5 (1.0.11) unstable; urgency=medium
 
   * Retry EDID while polling and emit a hotplug event; bind an attached

@@ -76,16 +76,20 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      11
+#define DRIVER_PATCHLEVEL      12
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
 #define TRIGGER5_MAX_FRAME_SIZE        SZ_8M
 #define TRIGGER5_DEFAULT_MODES_MAX     420
 
-/* Probe-time EDID retry window: 20 x 100 ms = 2 s. */
-#define TRIGGER5_EDID_RETRY_COUNT      20
-#define TRIGGER5_EDID_RETRY_MS         100
+/*
+ * The adapter occasionally returns a corrupt EDID block (bad checksum) when
+ * the DDC read races with its own settling. Retry immediately a few times;
+ * the connector poll retries again later if this still fails.
+ */
+#define TRIGGER5_EDID_READ_TRIES       3
+#define TRIGGER5_EDID_RETRY_MS         20
 
 struct trigger5_transfer {
        struct trigger5_device *trigger5;
@@ -1871,12 +1875,26 @@ static void trigger5_crtc_atomic_enable(struct drm_crtc *crtc,
        /* The vendor driver leaves ~105 ms between SET_MODE and reset201. */
        msleep(100);
 
-       ret = usb_control_msg_recv(udev, 0,
-                                  TRIGGER5_REQUEST_FIRMWARE_RESET,
-                                  USB_DIR_IN | USB_TYPE_VENDOR |
-                                          USB_RECIP_DEVICE,
-                                  0x0201, 0x0000, data, 1,
-                                  USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+       /*
+        * The post-mode reset can time out while the adapter is still
+        * draining the previous stream, especially under a virtualized USB
+        * controller. Retry briefly instead of failing the whole modeset on
+        * one timeout.
+        */
+       for (i = 0; i < 5; i++) {
+               ret = usb_control_msg_recv(udev, 0,
+                                          TRIGGER5_REQUEST_FIRMWARE_RESET,
+                                          USB_DIR_IN | USB_TYPE_VENDOR |
+                                                  USB_RECIP_DEVICE,
+                                          0x0201, 0x0000, data, 1,
+                                          USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
+               if (!ret)
+                       break;
+               drm_dbg(&trigger5->drm,
+                       "post-mode reset attempt %d failed: %d\n",
+                       i + 1, ret);
+               msleep(100);
+       }
        if (ret) {
                drm_err(&trigger5->drm, "post-mode reset failed: %d\n", ret);
                goto err;
@@ -2128,16 +2146,24 @@ static const struct attribute_group trigger5_default_modes_group = {
 static const struct drm_edid *
 trigger5_get_cached_edid(struct trigger5_device *trigger5)
 {
-       const struct drm_edid *edid;
+       const struct drm_edid *edid = NULL;
+       int i;
 
        mutex_lock(&trigger5->edid_lock);
        if (trigger5->edid) {
                edid = trigger5->edid;
        } else {
-               edid = drm_edid_read_custom(&trigger5->connector,
-                                           trigger5_read_edid, trigger5);
-               if (edid)
-                       trigger5->edid = edid;
+               for (i = 0; i < TRIGGER5_EDID_READ_TRIES; i++) {
+                       edid = drm_edid_read_custom(&trigger5->connector,
+                                                   trigger5_read_edid,
+                                                   trigger5);
+                       if (edid) {
+                               trigger5->edid = edid;
+                               break;
+                       }
+                       if (i + 1 < TRIGGER5_EDID_READ_TRIES)
+                               msleep(TRIGGER5_EDID_RETRY_MS);
+               }
        }
        mutex_unlock(&trigger5->edid_lock);
 
@@ -2173,8 +2199,17 @@ static void trigger5_edid_hotplug_work(struct work_struct *work)
 static int trigger5_connector_get_modes(struct drm_connector *connector)
 {
        struct trigger5_device *trigger5 = to_trigger5(connector->dev);
-       const struct drm_edid *edid = trigger5_get_cached_edid(trigger5);
+       const struct drm_edid *edid;
 
+       /*
+        * Defence in depth: the detect path keeps the connector disconnected
+        * until an EDID is available, but never issue the DDC tunnel read
+        * while the adapter is streaming.
+        */
+       if (trigger5->display_on && !trigger5_has_edid(trigger5))
+               return 0;
+
+       edid = trigger5_get_cached_edid(trigger5);
        if (!edid)
                return 0;
 
@@ -2200,25 +2235,41 @@ trigger5_detect(struct drm_connector *connector, bool force)
                                   USB_CTRL_GET_TIMEOUT, GFP_KERNEL);
        drm_dev_exit(idx);
 
-       if (ret)
-               return connector_status_unknown;
-
-       if (status[1] != 1)
-               return connector_status_disconnected;
-
        /*
-        * The monitor may not have been ready when the driver probed. Retry
-        * from the connector poll, but only while the stream is off: the
-        * adapter returns corrupt control replies while bulk transfers are
-        * active. A hotplug event makes X11 and Wayland re-enumerate the
-        * modes that were missing at probe time.
+        * The monitor may not have been ready when the driver probed, and the
+        * status request is not reliable on this adapter: it times out while
+        * the device is busy and has been seen reporting disconnected with a
+        * monitor attached. The EDID is authoritative for whether there are
+        * modes, so try it while no stream is active.
         */
-       if (trigger5->registered && !trigger5->display_on &&
-           !trigger5_has_edid(trigger5) &&
+       if (!trigger5_has_edid(trigger5) && !trigger5->display_on &&
            trigger5_get_cached_edid(trigger5)) {
                drm_info(&trigger5->drm, "EDID read succeeded after retry\n");
-               schedule_work(&trigger5->edid_hotplug_work);
+               if (trigger5->registered)
+                       schedule_work(&trigger5->edid_hotplug_work);
+
+               /* The EDID proves that a monitor is present. */
+               return connector_status_connected;
        }
+
+       if (!trigger5_has_edid(trigger5)) {
+               /*
+                * No EDID means no real modes. Report disconnected so DRM
+                * does not install the 1024x768 no-EDID fallback and start a
+                * stream that makes control requests (including the EDID
+                * read) time out. If a fallback stream is already running,
+                * this also makes userspace stop it, so the next poll can
+                * read the EDID.
+                */
+               return connector_status_disconnected;
+       }
+
+       /*
+        * A successful status read still detects the monitor being unplugged.
+        * When the status request fails, keep the output.
+        */
+       if (ret == 0 && status[1] != 1)
+               return connector_status_disconnected;
 
        return connector_status_connected;
 }
@@ -2270,7 +2321,6 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                              const struct usb_device_id *id)
 {
        int ret;
-       int i;
        struct trigger5_device *trigger5;
        struct usb_endpoint_descriptor *bulk_out;
        struct drm_device *dev;
@@ -2280,7 +2330,6 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        struct usb_device *udev = interface_to_usbdev(interface);
        /* Heuristic: Presence of audio interfaces indicates HDMI. */
        bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
-       enum drm_connector_status status;
        u8 data;
 
        trigger5 = devm_drm_dev_alloc(&interface->dev, &trigger5_drm_driver,
@@ -2392,24 +2441,14 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        /*
         * Read the EDID before any bulk transfer can be started. The adapter
         * returns corrupt EDID replies while streaming, so this has to happen
-        * here rather than lazily. Monitors can take a moment to provide EDID
-        * after attach, so retry for a bounded window; the connector poll
-        * retries again later if this is not enough. Skip the window when no
-        * monitor is attached.
+        * here rather than lazily. Try a few times because the monitor may
+        * still be powering up; the connector poll retries again while no
+        * stream is active if this window is not enough.
         */
-       status = trigger5_detect(&trigger5->connector, false);
-       if (status != connector_status_disconnected) {
-               for (i = 0; i < TRIGGER5_EDID_RETRY_COUNT; i++) {
-                       if (trigger5_get_cached_edid(trigger5))
-                               break;
-                       msleep(TRIGGER5_EDID_RETRY_MS);
-               }
-
-               if (!trigger5_has_edid(trigger5))
-                       drm_warn(dev,
-                                "no EDID after %u attempts, will retry while polling\n",
-                                TRIGGER5_EDID_RETRY_COUNT);
-       }
+       if (!trigger5_get_cached_edid(trigger5))
+               drm_warn(dev,
+                        "no EDID after %u attempts; output stays disabled until EDID is readable\n",
+                        TRIGGER5_EDID_READ_TRIES);
 
        /* Informational 0xA4 table; also read before streaming starts. */
        trigger5_read_default_modes(trigger5);

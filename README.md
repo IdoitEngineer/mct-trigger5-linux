@@ -24,7 +24,7 @@ the vendor binaries are proprietary and not covered — see
 | `docs/call-flow.md` | X11/tool → DRM/KMS → `trigger5.ko` → USB → panel call and data flow, including cursor and rotation paths. |
 | `VERSION` | Current package version; update with `scripts/bump-version.sh`. |
 | `CHANGELOG.md` | Release history and known limitations. |
-| `trigger5-dkms_1.0.11_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
+| `trigger5-dkms_1.0.12_all.deb` | Local build artifact (not tracked in git). Build it with the instructions below. |
 
 Vendor installers are not kept in this repo (they are proprietary); see
 [Vendor drivers](#vendor-drivers) for MCT's download links.
@@ -34,7 +34,7 @@ Vendor installers are not kept in this repo (they are proprietary); see
 - Device probes, reads EDID from the attached monitor, sets modes and streams
   frames. Verified with a VGA panel (`LG E2341`, 1920×1080) on 2026‑11‑20, and
   1024×768 via both `trigger5-tool` and KDE/xrandr on 2026‑11‑25.
-- Driver installed via DKMS as `trigger5/1.0.11`; autoloads from the USB modalias
+- Driver installed via DKMS as `trigger5/1.0.12`; autoloads from the USB modalias
   and `/etc/modules`, so it survives reboots and kernel upgrades.
 - Native plane rotation (0/90/180/270) is supported; damage rectangles are
   mapped into panel space and sent as partial frames, with full frames after
@@ -96,9 +96,9 @@ make debpkg
 Both produce these artefacts one level up (repo root):
 
 ```
-../trigger5-dkms_1.0.11_all.deb
-../trigger5_1.0.11_amd64.changes
-../trigger5_1.0.11_amd64.buildinfo
+../trigger5-dkms_1.0.12_all.deb
+../trigger5_1.0.12_amd64.changes
+../trigger5_1.0.12_amd64.buildinfo
 ```
 
 Remove the Debian build state and `.changes`/`.buildinfo` (the built `.deb`
@@ -111,9 +111,9 @@ make debclean
 Install it:
 
 ```sh
-sudo apt install ./trigger5-dkms_1.0.11_all.deb
+sudo apt install ./trigger5-dkms_1.0.12_all.deb
 # or
-sudo dpkg -i trigger5-dkms_1.0.11_all.deb
+sudo dpkg -i trigger5-dkms_1.0.12_all.deb
 ```
 
 Typical end-to-end:
@@ -121,7 +121,7 @@ Typical end-to-end:
 ```sh
 cd linux-trigger5
 make debpkg
-sudo apt install ../trigger5-dkms_1.0.11_all.deb
+sudo apt install ../trigger5-dkms_1.0.12_all.deb
 sudo reboot
 ```
 
@@ -330,7 +330,7 @@ driver never calls `request_firmware()`.
 - Source: `linux-trigger5/trigger5.c`, the in-review mainline driver
   `drivers/gpu/drm/tiny/trigger5.c`, from `[PATCH v6] drm/tiny: trigger5`
   by Ho Jie Feng (dri-devel, 2026‑11‑12).
-- Packaging: DKMS (`trigger5/1.0.11`) with a plain out-of-tree `Makefile`.
+- Packaging: DKMS (`trigger5/1.0.12`) with a plain out-of-tree `Makefile`.
 - Requires Linux **6.12 or newer**. The driver carries compile-time guards for
   the 7.x DRM API changes (`struct drm_atomic_state` → `drm_atomic_commit` in
   7.2, `atomic_create_state` in 7.3). `dkms.conf` sets
@@ -342,13 +342,15 @@ driver never calls `request_firmware()`.
 
 ### Local changes relative to upstream v6
 
-1. **EDID read once, cached, with a bounded probe retry.** The adapter
-   corrupts the EDID control reply if it arrives while bulk transfers are
-   running (`EDID block 0 … checksum is invalid`). Re-reading on every
-   `get_modes` wiped the connector's mode list and dropped the output to
-   1024×768 on any re-probe. The driver now retries for up to 2 s at probe,
-   retries again during connector polling while no stream is active, and emits
-   a hotplug event once a late read succeeds.
+1. **EDID read once, cached, with bounded retries.** The adapter corrupts the
+   EDID control reply if it arrives while bulk transfers are running
+   (`EDID block 0 … checksum is invalid`). Re-reading on every `get_modes`
+   wiped the connector's mode list and dropped the output to 1024×768 on any
+   re-probe. The driver now retries a few times at probe, retries again during
+   connector polling while no stream is active, and emits a hotplug event once
+   a late read succeeds. Until a valid EDID is available the connector reports
+   disconnected, so DRM does not install the 1024×768 no-EDID fallback (which
+   could start a stream and make the EDID and status requests time out).
 2. **Full frame after enable, framebuffer change or rotation change.**
    Prevents stale rows when X allocates a new framebuffer or the plane rotation
    changes.
@@ -399,8 +401,10 @@ These are local until the driver lands upstream.
 - The module loads from the USB modalias when the adapter is plugged in.
   Installing or upgrading the DKMS package while the adapter is already
   attached replays the USB add event, so the module binds without a reboot. An
-  older module that is already loaded still needs a replug (or reboot) to pick
-  up the new build.
+  older module that is already loaded keeps running the old code; reboot, or
+  stop the display session and run
+  `sudo modprobe -r trigger5 && sudo modprobe trigger5`, to load the new build.
+  Replugging the adapter alone does not reload the module.
 - Xorg and mutter (Wayland) both hot-add a new DRM card at runtime: Xorg
   through its udev backend (`AutoAddGPU`, on by default) and mutter since GNOME
   3.32. If the monitor is not ready when the card appears, the driver retries
@@ -730,12 +734,13 @@ precedence over both in-file defaults.
 | Adapter plugged in after login, no new output | Xorg/mutter hot-add the card. If the card appears but the connector has no modes, wait for the EDID retry or check `dmesg`; on X11, see the runtime unplug note above. |
 | Module won't unload | It is in use by X/DRM. Stop the display manager or reboot. |
 | Panel stays black | Check `cat /sys/class/drm/card*-VGA-1/status`; try `xrandr --output VGA-1-1 --auto`. |
-| Output falls back to 1024×768 / `0mm x 0mm` | EDID read failed. The driver retries at probe and during connector polling, then emits a hotplug event; if it still happens, replug the dongle or `sudo modprobe -r trigger5 && sudo modprobe trigger5`. |
-| `EDID … checksum is invalid` in dmesg | Same race; fixed by the cached-EDID change. |
+| No output; connector stays disconnected | EDID is not readable. The driver retries at probe and during connector polling, reports the connector disconnected until a valid EDID exists (there is no 1024×768 fallback), then emits a hotplug event. Check `dmesg`; replug the dongle if it persists. |
+| `post-mode reset failed: -110` | Transient USB control timeout. The driver retries the post-mode reset five times; if it still fails, replug the dongle. |
+| `EDID … checksum is invalid` in dmesg | The adapter returned a corrupt block, usually while a stream was active. The driver now retries the read and never reads while streaming; if it persists, replug the dongle. |
 | Garbled / stale picture after rotation | Native rotation sends per-clip partial frames aligned to 4 pixels in panel space. Capture `dmesg` and check the EDID/mode list; report the rotation value used. |
 | Layout lost after reboot | Apply it in KDE's display settings (KScreen), not with raw `xrandr`. |
 | Kernel upgrade fails to rebuild | `sudo dkms autoinstall`; if the API changed, rebase `trigger5.c` on a newer upstream revision. |
-| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.11_all.deb`, or `sudo ./install.sh`). |
+| `Bad return status for module build on kernel < 6.12` | Expected: the driver needs kernel ≥ 6.12. `dkms.conf` declares `BUILD_EXCLUSIVE_KERNEL_MIN="6.12"`, so DKMS skips those kernels. Refresh the installed source (`sudo apt install --reinstall ./trigger5-dkms_1.0.12_all.deb`, or `sudo ./install.sh`). |
 
 Recovery if a rotation experiment leaves the output broken:
 

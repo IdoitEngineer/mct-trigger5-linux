@@ -4,6 +4,31 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.12] - 2026-11-28
+
+### Fixed
+
+- Do not expose a connected connector without a valid EDID. The DRM no-EDID
+  fallback could enable a 1024×768 stream, after which the EDID and status
+  control requests returned corrupt data or timed out, and the output stayed
+  without real modes. The connector now reports disconnected until an EDID is
+  readable; the driver retries the DDC read while idle and switches to
+  connected, with a hotplug event, once it succeeds.
+- Retry the EDID read a few times immediately. The adapter occasionally
+  returns a corrupt block (bad checksum); a single transient read no longer
+  leaves the connector without modes until the next poll.
+- Do not issue an EDID read from `get_modes` while the adapter is streaming,
+  as a defence in depth against the corrupt-control-reply race.
+- Retry the post-mode reset (`0xD1 0x0201`) up to five times instead of
+  failing the whole modeset on a single timeout.
+- Probe the EDID even when `GET_STATUS` reports disconnected or times out; that
+  status bit is not reliable on this adapter.
+
+### Changed
+
+- The 1024×768 no-EDID fallback is no longer exposed. An adapter whose EDID
+  cannot be read stays disconnected and has no output until a read succeeds.
+
 ## [1.0.11] - 2026-11-28
 
 ### Added
