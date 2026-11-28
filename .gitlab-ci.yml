@@ -12,10 +12,10 @@ stages:
 
 variables:
   DEBIAN_FRONTEND: noninteractive
-  # Runner tag. The default targets the canonical self-hosted runner; a project
-  # CI/CD variable of the same name overrides it. The workflow rule below
-  # selects GitLab.com's hosted runners automatically.
-  TRIGGER5_RUNNER_TAG: tls-docker-runner
+  # Runner tag. The default targets the Docker runner pool; a project CI/CD
+  # variable of the same name overrides it. The workflow rule below selects
+  # GitLab.com's hosted runners automatically.
+  TRIGGER5_RUNNER_TAG: docker
 
 workflow:
   rules:
