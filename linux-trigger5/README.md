@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.12`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.13`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -142,7 +142,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.12_all.deb`.
+`trigger5-dkms_1.0.13_all.deb`.
 
 Manual build if you prefer:
 
@@ -203,8 +203,15 @@ sudo ./uninstall.sh
   `dbcd36b` and `9babe7e7`; Ubuntu 24.04 has them in
   `21.1.12-1ubuntu1.9`). Older servers (including Debian 13 and Devuan 6 at the
   time of writing) can crash in `DGACloseScreen()` when a runtime-added GPU
-  screen is removed. Wayland is not affected. See
+  screen is removed. Wayland is not affected by this Xorg bug.
+- **On GNOME Wayland, log out before unplugging/replugging.** Mutter does not
+  remove GPUs; if the reattached card reuses the same `/dev/dri/cardN` path it
+  logs `device already present` and can segfault `gnome-shell`. Even with a new
+  card number, Mutter 46 can log GLib criticals and leave the output disabled.
+  A fresh session adds the new card normally. See
   [Runtime plug and unplug](../README.md#runtime-plug-and-unplug).
+- Card and connector numbers can change after a replug (`VGA-1` → `VGA-2`);
+  use `card*-VGA-*`, not a hardcoded name.
 - If the display appears but stays black, test it on both an HDMI and a VGA
   output if the dongle has one; upstream VGA support is untested.
 - Provenance detail: the patch was retrieved from the dri-devel archive, which

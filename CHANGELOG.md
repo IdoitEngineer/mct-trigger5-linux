@@ -4,6 +4,23 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.13] - 2026-11-28
+
+### Documented
+
+- GNOME Wayland cannot remove a GPU at runtime. Mutter keeps the old GPU in
+  its list; if a replugged adapter reuses the same `/dev/dri/cardN` path,
+  `gnome-shell` logs `device already present` and can SIGSEGV (observed on
+  Ubuntu 26.04 / GNOME 50.1). On Ubuntu 24.04 / GNOME 46 the shell can instead
+  log GLib criticals and leave the new output disabled. **Log out before
+  unplugging or replugging on Wayland**; a fresh session handles the new card
+  normally. This is a Mutter limitation, not a driver change.
+- Card and DRM connector numbers can change after a replug (`VGA-1` can become
+  `VGA-2`). Use `card*-VGA-*` or find the card by its `trigger5` driver instead
+  of hardcoding `VGA-1`.
+- Verified on Ubuntu 24.04: after a fresh login with the adapter attached, the
+  extra screen is available again.
+
 ## [1.0.12] - 2026-11-28
 
 ### Fixed
