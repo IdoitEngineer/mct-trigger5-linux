@@ -30,3 +30,6 @@ linux-trigger5/debian/*.debhelper.log
 .github.com-token
 .git-token
 .direnv/
+
+# Local agent instructions; never track or publish this file.
+AGENTS.md
