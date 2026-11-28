@@ -736,11 +736,11 @@ week; the Package Registry copy is the durable download.
 GitHub tag pipelines attach the same `.deb` to a GitHub Release.
 
 Jobs select their runner through `TRIGGER5_RUNNER_TAG`, which defaults to
-`tls-docker-runner` (the canonical self-hosted runner). A `workflow` rule sets
-it to `saas-linux-small-amd64` automatically when the pipeline runs on
-gitlab.com, so hosted runners need no project configuration. Any other host can
-override it with a project CI/CD variable of the same name, which takes
-precedence over both in-file defaults.
+`docker` (the Docker runner pool). A `workflow` rule sets it to
+`saas-linux-small-amd64` automatically when the pipeline runs on gitlab.com, so
+hosted runners need no project configuration. Any other host can override it
+with a project CI/CD variable of the same name, which takes precedence over both
+in-file defaults.
 
 ## Troubleshooting
 
