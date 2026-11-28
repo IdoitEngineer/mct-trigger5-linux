@@ -13,7 +13,7 @@ how the adapter works, firmware notes and troubleshooting.
 - Device: `0711:5805`, VGA output, LG E2341 panel (1920x1080)
 - Result: `cardN-VGA-1` probes, EDID/DDC read returns the mode list, modeset
   and bulk frame transfer work; the panel shows the desktop.
-- Installed with DKMS as `trigger5/1.0.10`; autoloads via the USB modalias in
+- Installed with DKMS as `trigger5/1.0.11`; autoloads via the USB modalias in
   `modules.alias` and the `/etc/modules` entry, so it survives reboots and
   kernel upgrades (DKMS rebuilds it).
 - KDE/KScreen saved the output layout (`VGA-1-1`, 1920x1080 at +3840+1080).
@@ -139,7 +139,7 @@ required.
 A Debian package is also available; build it with `make debpkg` (or
 `dpkg-buildpackage -us -uc -b`) — see the
 [repository README](../README.md#building-a-debian-package) — and install
-`trigger5-dkms_1.0.10_all.deb`.
+`trigger5-dkms_1.0.11_all.deb`.
 
 Manual build if you prefer:
 
@@ -190,6 +190,15 @@ sudo ./uninstall.sh
 - The module is signed neither by DKMS (no MOK key configured) nor by the
   kernel; Secure Boot is disabled on this machine, so that is fine.
 - Kernel upgrades are handled by DKMS automatically.
+- Installing the package while the adapter is attached replays the USB add
+  event, so the module binds without a reboot. If the monitor is not ready yet,
+  the driver retries the EDID at probe and during connector polling.
+- **X11 runtime unplug requires a patched xorg-server** (upstream commits
+  `dbcd36b` and `9babe7e7`; Ubuntu 24.04 has them in
+  `21.1.12-1ubuntu1.9`). Older servers (including Debian 13 and Devuan 6 at the
+  time of writing) can crash in `DGACloseScreen()` when a runtime-added GPU
+  screen is removed. Wayland is not affected. See
+  [Runtime plug and unplug](../README.md#runtime-plug-and-unplug).
 - If the display appears but stays black, test it on both an HDMI and a VGA
   output if the dongle has one; upstream VGA support is untested.
 - Provenance detail: the patch was retrieved from the dri-devel archive, which

@@ -8,7 +8,7 @@
 
 set -e
 
-VERSION=1.0.10
+VERSION=1.0.11
 KVER=$(uname -r)
 
 case "$1" in
@@ -16,8 +16,18 @@ configure)
 	if [ -d "/lib/modules/$KVER/build" ]; then
 		dkms add -m trigger5 -v "$VERSION" || true
 		if dkms build -m trigger5 -v "$VERSION" -k "$KVER"; then
-			dkms install -m trigger5 -v "$VERSION" -k "$KVER" || \
+			if dkms install -m trigger5 -v "$VERSION" -k "$KVER"; then
+				# Replay the USB add event so an adapter that is
+				# already attached binds without a reboot.
+				if command -v udevadm >/dev/null 2>&1; then
+					udevadm trigger --action=add \
+						--subsystem-match=usb \
+						--attr-match=idVendor=0711 || true
+					udevadm settle --timeout=5 || true
+				fi
+			else
 				echo "trigger5: dkms install failed" >&2
+			fi
 		else
 			echo "trigger5: build failed for $KVER; install matching kernel headers" >&2
 			echo "trigger5: see /var/lib/dkms/trigger5/$VERSION/build/make.log" >&2

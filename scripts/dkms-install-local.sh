@@ -107,6 +107,14 @@ for kdir in /lib/modules/*; do
 	fi
 done
 
+if [ "$installed" -gt 0 ] && command -v udevadm >/dev/null 2>&1; then
+	# Replay the USB add event so an adapter that is already attached binds
+	# without a reboot.
+	udevadm trigger --action=add --subsystem-match=usb \
+		--attr-match=idVendor=0711 || true
+	udevadm settle --timeout=5 || true
+fi
+
 echo
 echo "installed: $installed, skipped: $skipped, failed: $failures"
 

@@ -1,3 +1,11 @@
+trigger5 (1.0.11) unstable; urgency=medium
+
+  * Retry EDID while polling and emit a hotplug event; bind an attached
+    adapter on install via a udev add replay; harden disconnect; document the
+    X11 runtime-unplug requirement for patched xorg-server.
+
+ -- jeringa <j_eringa@yahoo.co.nz>  Sat, 28 Nov 2026 13:32:47 +1300
+
 trigger5 (1.0.10) unstable; urgency=medium
 
   * Fix atomic CRTC/connector state init on kernels before 7.3: provide

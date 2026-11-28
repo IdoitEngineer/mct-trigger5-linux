@@ -4,6 +4,34 @@ All notable changes to this repository are documented here. The driver is
 currently distributed as the DKMS package `trigger5/1.0.x`; the Linux DRM
 version follows the same `major.minor.patch` values.
 
+## [1.0.11] - 2026-11-28
+
+### Added
+
+- The DKMS post-install and `scripts/dkms-install-local.sh` now replay the USB
+  add event (`udevadm trigger`, scoped to vendor `0711`) after a successful
+  install, so an adapter that is already attached binds without a reboot.
+- EDID retry: the driver retries for up to 2 s at probe, then retries from the
+  connector poll whenever no frame stream is active. A successful late read
+  schedules a DRM hotplug event so X11 and Wayland re-enumerate the modes
+  without a session restart.
+
+### Fixed
+
+- Serialise the EDID cache with a mutex.
+- Harden USB disconnect: tolerate a missing interface data pointer, cancel the
+  EDID hotplug work, clear the interface data, and stop the stream before
+  freeing URBs and the shadow buffer.
+- Guard suspend/resume against a disconnected interface.
+
+### Documented
+
+- X11 runtime unplug requires a patched `xorg-server` (upstream commits
+  `dbcd36b` and `9babe7e7`; Ubuntu 24.04 has them in
+  `21.1.12-1ubuntu1.9`). Debian 13 and Devuan 6 ship older X servers that can
+  crash in `DGACloseScreen()` when a runtime-added GPU screen is removed.
+  Wayland is not affected.
+
 ## [1.0.10] - 2026-11-28
 
 ### Fixed

@@ -11,6 +11,8 @@
 #include <linux/math64.h>
 #include <linux/minmax.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -74,12 +76,16 @@
 
 #define DRIVER_MAJOR           1
 #define DRIVER_MINOR           0
-#define DRIVER_PATCHLEVEL      10
+#define DRIVER_PATCHLEVEL      11
 
 #define TRIGGER5_NUM_URBS      8
 #define TRIGGER5_URB_BUF_SIZE  SZ_128K
 #define TRIGGER5_MAX_FRAME_SIZE        SZ_8M
 #define TRIGGER5_DEFAULT_MODES_MAX     420
+
+/* Probe-time EDID retry window: 20 x 100 ms = 2 s. */
+#define TRIGGER5_EDID_RETRY_COUNT      20
+#define TRIGGER5_EDID_RETRY_MS         100
 
 struct trigger5_transfer {
        struct trigger5_device *trigger5;
@@ -122,10 +128,19 @@ struct trigger5_device {
        u8 *cursor_packet;
 
        /*
-        * EDID read at probe time. Kept for the lifetime of the device:
+        * EDID read at probe time, or later while the stream is off when the
+        * monitor was not ready at probe. Kept for the lifetime of the device:
         * reading it while bulk transfers are running returns corrupt data.
+        * Protected by edid_lock.
         */
        const struct drm_edid *edid;
+       struct mutex edid_lock;
+
+       /* Deferred so userspace re-enumerates after a late EDID success. */
+       struct work_struct edid_hotplug_work;
+
+       /* Set once drm_dev_register() succeeded. */
+       bool registered;
 
        /*
         * The adapter's own 0xA4 supported-mode table. Informational only:
@@ -300,6 +315,9 @@ static int trigger5_usb_suspend(struct usb_interface *interface,
        struct trigger5_device *trigger5 = usb_get_intfdata(interface);
        int ret;
 
+       if (!trigger5)
+               return -ENODEV;
+
        ret = drm_mode_config_helper_suspend(&trigger5->drm);
        if (ret)
                return ret;
@@ -312,6 +330,9 @@ static int trigger5_usb_suspend(struct usb_interface *interface,
 static int trigger5_usb_resume(struct usb_interface *interface)
 {
        struct trigger5_device *trigger5 = usb_get_intfdata(interface);
+
+       if (!trigger5)
+               return -ENODEV;
 
        return drm_mode_config_helper_resume(&trigger5->drm);
 }
@@ -2099,20 +2120,54 @@ static const struct attribute_group trigger5_default_modes_group = {
 };
 
 /*
- * Return the EDID read at probe time, reading it once if that failed.
- * It must never be re-read while the frame stream is active: the adapter
- * returns corrupt control replies then, which the DRM EDID parser rejects
+ * Return the cached EDID, reading it once if it is still missing. It must
+ * never be re-read while the frame stream is active: the adapter returns
+ * corrupt control replies then, which the DRM EDID parser rejects
  * ("checksum is invalid") and the connector loses its mode list.
  */
 static const struct drm_edid *
 trigger5_get_cached_edid(struct trigger5_device *trigger5)
 {
-       if (!trigger5->edid)
-               trigger5->edid = drm_edid_read_custom(&trigger5->connector,
-                                                     trigger5_read_edid,
-                                                     trigger5);
+       const struct drm_edid *edid;
 
-       return trigger5->edid;
+       mutex_lock(&trigger5->edid_lock);
+       if (trigger5->edid) {
+               edid = trigger5->edid;
+       } else {
+               edid = drm_edid_read_custom(&trigger5->connector,
+                                           trigger5_read_edid, trigger5);
+               if (edid)
+                       trigger5->edid = edid;
+       }
+       mutex_unlock(&trigger5->edid_lock);
+
+       return edid;
+}
+
+static bool trigger5_has_edid(struct trigger5_device *trigger5)
+{
+       bool has;
+
+       mutex_lock(&trigger5->edid_lock);
+       has = trigger5->edid != NULL;
+       mutex_unlock(&trigger5->edid_lock);
+
+       return has;
+}
+
+static void trigger5_edid_hotplug_work(struct work_struct *work)
+{
+       struct trigger5_device *trigger5 =
+               container_of(work, struct trigger5_device, edid_hotplug_work);
+       int idx;
+
+       if (!drm_dev_enter(&trigger5->drm, &idx))
+               return;
+
+       drm_dbg(&trigger5->drm, "EDID recovered, notifying userspace\n");
+       drm_kms_helper_hotplug_event(&trigger5->drm);
+
+       drm_dev_exit(idx);
 }
 
 static int trigger5_connector_get_modes(struct drm_connector *connector)
@@ -2148,8 +2203,24 @@ trigger5_detect(struct drm_connector *connector, bool force)
        if (ret)
                return connector_status_unknown;
 
-       return status[1] == 1 ? connector_status_connected :
-                            connector_status_disconnected;
+       if (status[1] != 1)
+               return connector_status_disconnected;
+
+       /*
+        * The monitor may not have been ready when the driver probed. Retry
+        * from the connector poll, but only while the stream is off: the
+        * adapter returns corrupt control replies while bulk transfers are
+        * active. A hotplug event makes X11 and Wayland re-enumerate the
+        * modes that were missing at probe time.
+        */
+       if (trigger5->registered && !trigger5->display_on &&
+           !trigger5_has_edid(trigger5) &&
+           trigger5_get_cached_edid(trigger5)) {
+               drm_info(&trigger5->drm, "EDID read succeeded after retry\n");
+               schedule_work(&trigger5->edid_hotplug_work);
+       }
+
+       return connector_status_connected;
 }
 
 static const struct drm_connector_helper_funcs trigger5_connector_helper_funcs = {
@@ -2188,9 +2259,11 @@ static void trigger5_edid_release(struct drm_device *drm, void *data)
 {
        struct trigger5_device *trigger5 = data;
 
+       mutex_lock(&trigger5->edid_lock);
        if (trigger5->edid)
                drm_edid_free(trigger5->edid);
        trigger5->edid = NULL;
+       mutex_unlock(&trigger5->edid_lock);
 }
 
 static int trigger5_usb_probe(struct usb_interface *interface,
@@ -2207,6 +2280,7 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        struct usb_device *udev = interface_to_usbdev(interface);
        /* Heuristic: Presence of audio interfaces indicates HDMI. */
        bool is_hdmi = udev->actconfig->desc.bNumInterfaces > 1;
+       enum drm_connector_status status;
        u8 data;
 
        trigger5 = devm_drm_dev_alloc(&interface->dev, &trigger5_drm_driver,
@@ -2215,6 +2289,8 @@ static int trigger5_usb_probe(struct usb_interface *interface,
                return PTR_ERR(trigger5);
 
        trigger5->intf = interface;
+       mutex_init(&trigger5->edid_lock);
+       INIT_WORK(&trigger5->edid_hotplug_work, trigger5_edid_hotplug_work);
 
        ret = usb_find_bulk_out_endpoint(interface->cur_altsetting, &bulk_out);
        if (ret)
@@ -2316,13 +2392,23 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        /*
         * Read the EDID before any bulk transfer can be started. The adapter
         * returns corrupt EDID replies while streaming, so this has to happen
-        * here rather than lazily. Retry a few times since the monitor may
-        * still be powering up.
+        * here rather than lazily. Monitors can take a moment to provide EDID
+        * after attach, so retry for a bounded window; the connector poll
+        * retries again later if this is not enough. Skip the window when no
+        * monitor is attached.
         */
-       for (i = 0; i < 3; i++) {
-               if (trigger5_get_cached_edid(trigger5))
-                       break;
-               msleep(20);
+       status = trigger5_detect(&trigger5->connector, false);
+       if (status != connector_status_disconnected) {
+               for (i = 0; i < TRIGGER5_EDID_RETRY_COUNT; i++) {
+                       if (trigger5_get_cached_edid(trigger5))
+                               break;
+                       msleep(TRIGGER5_EDID_RETRY_MS);
+               }
+
+               if (!trigger5_has_edid(trigger5))
+                       drm_warn(dev,
+                                "no EDID after %u attempts, will retry while polling\n",
+                                TRIGGER5_EDID_RETRY_COUNT);
        }
 
        /* Informational 0xA4 table; also read before streaming starts. */
@@ -2366,6 +2452,7 @@ static int trigger5_usb_probe(struct usb_interface *interface,
        ret = drm_dev_register(dev, 0);
        if (ret)
                goto err_poll_fini;
+       trigger5->registered = true;
 
        /*
         * Kernels without DRM_FBDEV_SHMEM_DRIVER_OPS (6.12, 7.0/7.1) do not
@@ -2390,11 +2477,20 @@ err_free_urbs:
 static void trigger5_usb_disconnect(struct usb_interface *interface)
 {
        struct trigger5_device *trigger5 = usb_get_intfdata(interface);
-       struct drm_device *dev = &trigger5->drm;
+       struct drm_device *dev;
+
+       if (!trigger5)
+               return;
+
+       dev = &trigger5->drm;
+       usb_set_intfdata(interface, NULL);
+       trigger5->registered = false;
+       cancel_work_sync(&trigger5->edid_hotplug_work);
 
        drm_kms_helper_poll_fini(dev);
        drm_dev_unplug(dev);
        drm_atomic_helper_shutdown(dev);
+       trigger5->display_on = false;
        trigger5_stop_io(trigger5);
        trigger5_free_urbs(trigger5);
        trigger5_shadow_free(trigger5);
